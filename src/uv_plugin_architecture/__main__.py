@@ -19,9 +19,17 @@ from pydantic_settings import (
 logger = logging.getLogger(__name__)
 
 
-def _pipe_to_log(stream, log_fn, prefix: str) -> None:
-    for line in stream:
-        log_fn(f"{prefix}{line.rstrip()}")
+def _pipe_to_log(stream, log_fn, prefix: str, buffer_output: bool = True) -> None:
+    if buffer_output:
+        # Buffer all output and emit as a single log message so multiline content
+        # (e.g. stack traces) isn't split across many log entries. Disable with
+        # log_multiline = false in plugin_config.toml if you need real-time output.
+        content = stream.read()
+        if content.strip():
+            log_fn(f"{prefix}{content.rstrip()}")
+    else:
+        for line in stream:
+            log_fn(f"{prefix}{line.rstrip()}")
 
 
 def _terminate_tree(proc: subprocess.Popen) -> None:
@@ -48,6 +56,10 @@ class Settings(BaseSettings):
 
     parallel: bool = True
     fail_fast: bool = True
+    # Buffer subprocess output and emit as a single log message per stream.
+    # Keeps multiline output (e.g. stack traces) together. Set to false for
+    # line-by-line logging (harder to read, but better compatibility).
+    log_multiline: bool = True
     plugin_paths: list[str] = Field(default_factory=list)
     plugins: dict[str, PluginConfig] = Field(default_factory=dict)
 
@@ -83,10 +95,20 @@ def run_plugin(
     kwargs = {**(popen_kwargs or {})}
     if sys.platform != "win32":
         kwargs.setdefault("start_new_session", True)
-    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs)
+    process = subprocess.Popen(
+        args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs
+    )
     prefix = f"[{Path(plugin_path).name}] "
-    stdout_t = threading.Thread(target=_pipe_to_log, args=(process.stdout, logger.info, prefix), daemon=True)
-    stderr_t = threading.Thread(target=_pipe_to_log, args=(process.stderr, logger.info, prefix), daemon=True)
+    stdout_t = threading.Thread(
+        target=_pipe_to_log,
+        args=(process.stdout, logger.info, prefix, log_multiline),
+        daemon=True,
+    )
+    stderr_t = threading.Thread(
+        target=_pipe_to_log,
+        args=(process.stderr, logger.info, prefix, log_multiline),
+        daemon=True,
+    )
     stdout_t.start()
     stderr_t.start()
     return process, stdout_t, stderr_t
@@ -108,6 +130,7 @@ def main():
             plugin_args=cfg.plugin_args,
             uv_run_args=cfg.uv_args,
             popen_kwargs=popen_kwargs,
+            log_multiline=settings.log_multiline,
         )
         plugin_path_to_procs[plugin_path] = process
         if cfg.wait:
