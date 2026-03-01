@@ -1,4 +1,3 @@
-import argparse
 import logging
 import os
 import signal
@@ -7,9 +6,9 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Self
+from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -48,9 +47,8 @@ def _terminate_tree(proc: subprocess.Popen) -> None:
 class PluginConfig(BaseModel):
     wait: bool = True
     plugin_args: list[str] = Field(default_factory=list)
-    uv_args: list[str] = Field(
-        default_factory=lambda: ["--quiet"]
-    )
+    uv_args: list[str] = Field(default_factory=lambda: ["--quiet"])
+
 
 class Settings(BaseSettings):
 
@@ -74,6 +72,7 @@ class Settings(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         return (
             init_settings,
+            dotenv_settings,
             env_settings,
             TomlConfigSettingsSource(settings_cls, "plugin_config.toml"),
         )
@@ -84,6 +83,7 @@ def run_plugin(
     plugin_args: list[str] | None = None,
     uv_run_args: list[str] | None = None,
     popen_kwargs: dict[str, Any] | None = None,
+    log_multiline: bool = True,
 ):
     logger.info(f"Running {plugin_path}")
     args = (
@@ -114,16 +114,15 @@ def run_plugin(
     return process, stdout_t, stderr_t
 
 
-
 def main():
     settings = Settings()
     plugin_paths = settings.plugin_paths
     logger.info(f"Running {len(plugin_paths)} plugin(s).")
 
     popen_kwargs = {}
-    plugin_path_to_procs: dict[str, subprocess.Popen] = {}
+    plugin_path_to_proc: dict[str, subprocess.Popen] = {}
 
-    def run_and_wait(plugin_path: str) -> tuple[str, int]:
+    def _run_and_wait(plugin_path: str) -> int:
         cfg = settings.plugins.get(plugin_path, PluginConfig())
         process, stdout_t, stderr_t = run_plugin(
             plugin_path,
@@ -132,25 +131,28 @@ def main():
             popen_kwargs=popen_kwargs,
             log_multiline=settings.log_multiline,
         )
-        plugin_path_to_procs[plugin_path] = process
+        plugin_path_to_proc[plugin_path] = process
         if cfg.wait:
             process.wait()
             stdout_t.join()
             stderr_t.join()
-        return plugin_path, process.returncode
+        return process.returncode
 
     if settings.parallel:
         executor = ThreadPoolExecutor()
-        futures = {executor.submit(run_and_wait, p): p for p in plugin_paths}
-        for future in as_completed(futures):
-            plugin_path, rc = future.result()
+        future_to_plugin_path = {
+            executor.submit(_run_and_wait, p): p for p in plugin_paths
+        }
+        for future in as_completed(future_to_plugin_path):
+            rc = future.result()
+            plugin_path = future_to_plugin_path[future]
             if rc != 0:
                 logger.info(f"{plugin_path} failed with return code {rc}")
                 if settings.fail_fast:
                     logger.info(
                         "Fail fast enabled: terminating any plugins still running."
                     )
-                    for plugin_path, proc in plugin_path_to_procs.items():
+                    for plugin_path, proc in plugin_path_to_proc.items():
                         if proc.poll() is None:
                             logger.info(
                                 f"Terminating {plugin_path} with PID {proc.pid}"
@@ -164,7 +166,7 @@ def main():
             executor.shutdown(wait=True)
     else:
         for plugin_path in plugin_paths:
-            plugin_path, rc = run_and_wait(plugin_path)
+            rc = _run_and_wait(plugin_path)
             if rc != 0:
                 logger.info(f"{plugin_path} failed with return code {rc}")
                 if settings.fail_fast:
