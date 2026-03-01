@@ -1,0 +1,21 @@
+# plugin_config.toml
+
+# Ordered list of plugin scripts to run; paths are relative to the config file. can also be github raw file URLs.
+plugin_paths = [
+    "plugins/plugin_a.py",
+    "https://gist.githubusercontent.com/TAJD/1d389deba4221343caef5155090674eb/raw/13984206c008fdb35d2d574fa76b682991f00a08/error_handling.py",
+    "plugins/plugin_b.py",
+    "plugins/plugin_c.py",
+]
+
+# Run plugins in parallel (default: true) false: runs one at a time, in order, as listed in plugin_paths)
+parallel = true
+
+# Stop all on failure of a plugin (default: true) false: allows all plugins to finish even if some fail
+fail_fast = true
+
+# Per-plugin overrides: keys must match entries in plugin_paths
+[plugins."plugins/plugin_a.py"]
+wait = true          # wait for plugin to finish before continuing (default: true)
+plugin_args = ["--param1", "updated_value"]     # args passed to the plugin script
+uv_args = ["--quiet"]         # args passed to `uv run`; replaces global uv args when set
