@@ -95,18 +95,29 @@ def run_plugin(
     kwargs = {**(popen_kwargs or {})}
     if sys.platform != "win32":
         kwargs.setdefault("start_new_session", True)
+    logger.info(f"Running {plugin_path} with {plugin_args=}")
     process = subprocess.Popen(
         args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs
     )
-    prefix = f"[{Path(plugin_path).name}] "
+    prefix = f"[{Path(plugin_path).name}:{process.pid}] "
     stdout_t = threading.Thread(
         target=_pipe_to_log,
-        args=(process.stdout, logger.info, prefix, log_multiline),
+        kwargs={
+            "stream": process.stdout,
+            "log_fn": logger.info,
+            "prefix": prefix,
+            "buffer_output": log_multiline,
+        },
         daemon=True,
     )
     stderr_t = threading.Thread(
         target=_pipe_to_log,
-        args=(process.stderr, logger.info, prefix, log_multiline),
+        kwargs={
+            "stream": process.stderr,
+            "log_fn": logger.info,
+            "prefix": prefix,
+            "buffer_output": log_multiline,
+        },
         daemon=True,
     )
     stdout_t.start()
