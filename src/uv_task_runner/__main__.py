@@ -4,13 +4,12 @@
 #     "pydantic-settings>=2.13.1",
 # ]
 # ///
-import platform
 import concurrent.futures as cf
 import logging
 import os
+import platform
 import signal
 import subprocess
-import sys
 import threading
 from pathlib import Path
 from typing import IO, Any, Callable
@@ -42,7 +41,7 @@ class Settings(BaseSettings):
     # line-by-line logging (harder to read, but better compatibility).
     log_multiline: bool = True
     task_paths: list[str] = Field(default_factory=list)
-    tasks: dict[str, TaskConfig] = Field(default_factory=dict)
+    task_configs: dict[str, TaskConfig] = Field(default_factory=dict)
 
     @classmethod
     def settings_customise_sources(
@@ -100,12 +99,7 @@ def run_task(
     popen_kwargs: dict[str, Any] | None = None,
     log_multiline: bool = True,
 ) -> tuple[subprocess.Popen, threading.Thread, threading.Thread]:
-    args = (
-        ["uv", "run"]
-        + (uv_run_args or [])
-        + [task_path]
-        + (task_args or [])
-    )
+    args = ["uv", "run"] + (uv_run_args or []) + [task_path] + (task_args or [])
     kwargs = dict(popen_kwargs or {})
     if platform.system() != "Windows":
         # Start the process in a new process group so we can terminate the whole tree if needed.
@@ -134,12 +128,13 @@ def run_task(
 
 def main():
     settings = Settings()
-    
+
     # start root logger
     logging.basicConfig(
-        level=settings.log_level, format="%(asctime)s | %(levelname)s | %(message)s"
+        level=settings.log_level, format="%(asctime)s | %(levelname)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S",
+
     )
-    
+
     task_paths = settings.task_paths
     logger.info(f"Running {len(task_paths)} task(s).")
 
@@ -147,7 +142,7 @@ def main():
     task_path_to_proc: dict[str, subprocess.Popen] = {}
 
     def _helper(task_path: str) -> int | None:
-        cfg = settings.tasks.get(task_path, TaskConfig())
+        cfg = settings.task_configs.get(task_path, TaskConfig())
         process, stdout_t, stderr_t = run_task(
             task_path,
             task_args=cfg.task_args,

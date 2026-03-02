@@ -1,4 +1,4 @@
-# task_config.toml
+# task_runner.toml
 
 # Ordered list of task scripts to run; paths are relative to the config file. can also be github raw file URLs.
 task_paths = [
@@ -15,7 +15,7 @@ parallel = false
 fail_fast = true
 
 # Per-task overrides: keys must match entries in task_paths
-[tasks."scripts/script_a.py"]
+[task_configs."scripts/script_a.py"]
 wait = true # wait for task to finish before continuing (default: true)
 task_args = ["--param1", "updated_value"] # args passed to the task script
 uv_run_args = [

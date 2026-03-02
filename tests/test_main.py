@@ -11,11 +11,11 @@ from unittest.mock import MagicMock, patch
 from uv_task_runner import hello
 from uv_task_runner.__main__ import (
     Settings,
+    TaskConfig,
     _pipe_to_log,
     _terminate_tree,
     main,
     run_task,
-    TaskConfig,
 )
 
 # ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ class TestSettings:
         assert s.fail_fast is True
         assert s.log_multiline is True
         assert s.task_paths == []
-        assert s.tasks == {}
+        assert s.task_configs == {}
 
     def test_loads_from_toml(self, tmp_path, monkeypatch):
         toml = tmp_path / "task_runner.toml"
@@ -98,9 +98,9 @@ class TestSettings:
         assert s.fail_fast is False
         assert s.log_multiline is False
         assert s.task_paths == ["a.py", "b.py"]
-        assert "a.py" in s.tasks
-        assert s.tasks["a.py"].wait is False
-        assert s.tasks["a.py"].task_args == ["--x"]
+        assert "a.py" in s.task_configs
+        assert s.task_configs["a.py"].wait is False
+        assert s.task_configs["a.py"].task_args == ["--x"]
 
     def test_init_kwargs_override_toml(self, tmp_path, monkeypatch):
         toml = tmp_path / "task_runner.toml"
@@ -115,9 +115,10 @@ class TestSettings:
         toml.write_text('task_paths = ["x.py"]\n')
         monkeypatch.chdir(tmp_path)
         s = Settings()
-        cfg = s.tasks.get("x.py", TaskConfig())
+        cfg = s.task_configs.get("x.py", TaskConfig())
         assert cfg.wait is True
         assert cfg.task_args == []
+        assert cfg.uv_run_args == ["--quiet", "--script"]
 
 
 # ---------------------------------------------------------------------------
