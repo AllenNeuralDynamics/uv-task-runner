@@ -59,7 +59,7 @@ def main() -> None:
         p.add_argument("--init", nargs="?", const=settings.DEFAULT_CONFIG_PATH)
         args, _ = p.parse_known_args(sys.argv[1:])
         try:
-            dest = settings.write_default_config(args.init)
+            dest = settings.write_template_config(args.init)
             print(f"Created {dest}")
         except FileExistsError as exc:
             print(f"Error: {exc}", file=sys.stderr)

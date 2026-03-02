@@ -11,10 +11,10 @@ from uv_task_runner import task
 
 DEFAULT_CONFIG_PATH = Path("uv_task_runner.toml")
 
-_DEFAULT_CONFIG_RESOURCE = Path(__file__).parent / "template_config.toml"
+_TEMPLATE_CONFIG_RESOURCE = Path(__file__).parent / "template_config.toml"
 
 
-def write_default_config(dest: Path | str = DEFAULT_CONFIG_PATH) -> Path:
+def write_template_config(dest: Path | str = DEFAULT_CONFIG_PATH) -> Path:
     """Write the annotated default config to *dest*.
 
     Returns the resolved path that was written.
@@ -25,7 +25,7 @@ def write_default_config(dest: Path | str = DEFAULT_CONFIG_PATH) -> Path:
         dest = dest.resolve() / DEFAULT_CONFIG_PATH
     if dest.exists():
         raise FileExistsError(f"{dest} already exists. Delete it or choose a different path.")
-    dest.write_text(_DEFAULT_CONFIG_RESOURCE.read_text(encoding="utf-8"), encoding="utf-8")
+    dest.write_text(_TEMPLATE_CONFIG_RESOURCE.read_text(encoding="utf-8"), encoding="utf-8")
     return dest.resolve()
 
 
