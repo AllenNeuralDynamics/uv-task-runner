@@ -13,14 +13,19 @@ Each script is invoked as `uv run <script>`, so scripts can declare their own de
 
 ## Installation
 
+Make available globally:
 ```bash
-uv add uv-task-runner
+uv install uv-task-runner
 ```
 
-Or install directly:
-
+Run from CLI with no installation:
 ```bash
-uv pip install uv-task-runner
+uv run uv-task-runner [--config path/to/config.toml]
+```
+
+Or install directly in project:
+```bash
+uv add uv-task-runner
 ```
 
 ---
@@ -29,7 +34,14 @@ uv pip install uv-task-runner
 
 ### CLI
 
-Create a `task_runner.toml` in your project root:
+Generate an annotated config file in the current directory:
+
+```bash
+uv run uv-task-runner --init              # writes uv_task_runner.toml
+uv run uv-task-runner --init my_tasks.toml  # custom path
+```
+
+Or write it by hand. Minimal `uv_task_runner.toml`:
 
 ```toml
 [[tasks]]
@@ -43,24 +55,36 @@ task_args = ["--output", "results/"]
 Then run:
 
 ```bash
-uv run task-runner
+uv run uv-task-runner
 ```
 
 Use a different config file:
 
 ```bash
-uv run task-runner --config path/to/config.toml
+uv run uv-task-runner --config path/to/config.toml
 ```
 
 Override settings at the command line (CLI args take precedence over TOML):
 
 ```bash
-uv run task-runner --parallel --fail-fast --log-level DEBUG
+uv run uv-task-runner --parallel --fail-fast --log-level DEBUG
 ```
+
+Tasks can also be passed directly via `--tasks` as a JSON array (the TOML config is recommended for anything beyond a quick one-off, as shell escaping is error-prone):
+
+```bash
+# Single task
+uv run uv-task-runner --tasks "[{\"task_path\":\"scripts/my_script.py\"}]"
+
+# Multiple tasks with args
+uv run uv-task-runner --tasks "[{\"task_path\":\"scripts/a.py\"},{\"task_path\":\"scripts/b.py\",\"task_args\":[\"--verbose\"]}]"
+```
+
+Note: double quotes inside the JSON must be escaped with `\"`. All `TaskConfig` fields are supported.
 
 ### Example output
 
-Given a `task_runner.toml`:
+Given a `uv_task_runner.toml`:
 
 ```toml
 # Tasks are executed in order below if parallel=false (default):
@@ -81,7 +105,7 @@ uv_run_args = ["--python", "3.14", "--verbose", "--script", "--no-project"]
 task_path = "scripts/script_c.py"
 ```
 
-Running `uv run task-runner` produces:
+Running `uv run uv-task-runner` produces:
 
 ```
 2026-03-02 13:32:27 | INFO | Running 4 task(s).
