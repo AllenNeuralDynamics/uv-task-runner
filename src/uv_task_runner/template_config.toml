@@ -1,0 +1,50 @@
+# uv_task_runner.toml — configuration for uv-task-runner
+#
+# Run tasks sequentially or in parallel. Each [[tasks]] entry is one task.
+# Paths are relative to this config file; GitHub raw file URLs are also supported.
+
+# ---------------------------------------------------------------------------
+# Global settings
+# ---------------------------------------------------------------------------
+
+# Run all tasks concurrently instead of sequentially (default: false)
+parallel = false
+
+# Abort remaining tasks as soon as one fails (default: false)
+fail_fast = false
+
+# Log the commands that would run without executing anything (default: false)
+dry_run = false
+
+# Logging verbosity: DEBUG | INFO | WARNING | ERROR | CRITICAL (default: "INFO")
+log_level = "INFO"
+
+# Buffer subprocess output per stream instead of streaming line-by-line.
+# false (default): output appears in real-time; never lost for wait=false tasks.
+# true: keeps multiline output (e.g. stack traces) together, but buffers until
+#       the subprocess exits.
+log_multiline = false
+
+# ---------------------------------------------------------------------------
+# Tasks — add one [[tasks]] block per script to run
+# ---------------------------------------------------------------------------
+
+# Minimal example: only task_path is required.
+# [[tasks]]
+# task_path = "scripts/my_script.py"
+
+# Full example showing all per-task options:
+#
+# [[tasks]]
+# task_path = "scripts/my_script.py"
+#
+# # Arguments forwarded to the script itself (default: [])
+# task_args = ["--param", "value"]
+#
+# # Arguments forwarded to `uv run` (default: ["--quiet", "--script"])
+# # Note: --python without --no-project will warn; --help/-h are disallowed.
+# uv_run_args = ["--quiet", "--script"]
+#
+# # Wait for this task to finish before continuing (default: true)
+# # Set false to fire-and-forget; the process outlives the main runner.
+# wait = true

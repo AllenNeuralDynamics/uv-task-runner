@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-task-runner = "uv_task_runner.__main__:main"
+uv-task-runner = "uv_task_runner.__main__:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

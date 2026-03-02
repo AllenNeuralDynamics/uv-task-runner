@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import logging
+import sys
+from pathlib import Path
 
 from pydantic_settings import (
     BaseSettings,
@@ -49,6 +51,32 @@ class _CliSettings(settings.Settings):
 
 
 def main() -> None:
+    # Handle --init as a unique case then exit:
+    if "--init" in sys.argv[1:]:
+        import argparse
+
+        p = argparse.ArgumentParser(add_help=False)
+        p.add_argument("--init", nargs="?", const=settings.DEFAULT_CONFIG_PATH)
+        args, _ = p.parse_known_args(sys.argv[1:])
+        try:
+            dest = settings.write_default_config(args.init)
+            print(f"Created {dest}")
+        except FileExistsError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(1) from None
+        return
+
+    config_path, _ = settings._parse_config_path()
+    if not Path(config_path).exists():
+        if "--config" in sys.argv[1:]:
+            print(f"Error: config file not found: {config_path}", file=sys.stderr)
+            raise SystemExit(1)
+        print(
+            f"No config file found at '{Path(config_path).resolve()}'. "
+            f"Run --init <dest> to create a template, or pass --config <src>.",
+            file=sys.stderr,
+        )
+
     s = _CliSettings()
 
     logging.basicConfig(

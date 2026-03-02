@@ -2,11 +2,31 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
 from uv_task_runner import task
+
+DEFAULT_CONFIG_PATH = Path("uv_task_runner.toml")
+
+_DEFAULT_CONFIG_RESOURCE = Path(__file__).parent / "template_config.toml"
+
+
+def write_default_config(dest: Path | str = DEFAULT_CONFIG_PATH) -> Path:
+    """Write the annotated default config to *dest*.
+
+    Returns the resolved path that was written.
+    Raises FileExistsError if *dest* already exists.
+    """
+    dest = Path(dest)
+    if dest.is_dir():
+        dest = dest.resolve() / DEFAULT_CONFIG_PATH
+    if dest.exists():
+        raise FileExistsError(f"{dest} already exists. Delete it or choose a different path.")
+    dest.write_text(_DEFAULT_CONFIG_RESOURCE.read_text(encoding="utf-8"), encoding="utf-8")
+    return dest.resolve()
 
 
 def _parse_config_path() -> tuple[str, list[str]]:
@@ -19,7 +39,7 @@ def _parse_config_path() -> tuple[str, list[str]]:
     import argparse
 
     pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--config", default="task_runner.toml")
+    pre.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     args, remaining = pre.parse_known_args(sys.argv[1:])
     return args.config, remaining
 
