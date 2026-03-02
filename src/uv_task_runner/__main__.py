@@ -155,44 +155,42 @@ def main():
             process.wait()
             stdout_t.join()
             stderr_t.join()
-        rc: int | None = process.returncode  # None if cfg.wait is False
-        return rc
+        exit_code: int | None = process.returncode  # None if cfg.wait is False
+        return exit_code
+
+    def _handle_result(task_path: str, exit_code: int | None) -> bool:
+        """Log task result. Return True if fail_fast should trigger."""
+        if exit_code is None:
+            logger.info(f"{task_path} is running: not waiting for it to finish.")
+            return False
+        if exit_code != 0:
+            logger.error(f"{task_path} failed with exit code {exit_code}")
+            return settings.fail_fast
+        logger.info(f"{task_path} completed successfully.")
+        return False
 
     if settings.parallel:
         with cf.ThreadPoolExecutor() as executor:
             future_to_task_path = {executor.submit(_helper, p): p for p in task_paths}
             for future in cf.as_completed(future_to_task_path):
-                exit_code = future.result()
                 task_path = future_to_task_path[future]
-                if exit_code != 0:
-                    logger.error(f"{task_path} failed with return code {exit_code}")
-                    if settings.fail_fast:
-                        logger.warning(
-                            "Fail fast enabled: terminating any tasks still running."
-                        )
-                        for task_path, proc in task_path_to_proc.items():
-                            if proc.poll() is None:
-                                logger.warning(
-                                    f"Terminating {task_path} with PID {proc.pid}"
-                                )
-                                _terminate_tree(proc)
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        break
-                else:
-                    logger.info(f"{task_path} completed successfully.")
+                if _handle_result(task_path, exit_code=future.result()):
+                    logger.warning(
+                        "Fail fast enabled: terminating any tasks still running."
+                    )
+                    for tp, proc in task_path_to_proc.items():
+                        if proc.poll() is None:
+                            logger.warning(
+                                f"Terminating {tp} with PID {proc.pid}"
+                            )
+                            _terminate_tree(proc)
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
     else:
         for task_path in task_paths:
-            exit_code = _helper(task_path)
-            if exit_code is None:
-                logger.info(f"{task_path} is running: not waiting for it to finish.")
-                continue
-            elif exit_code != 0:
-                logger.error(f"{task_path} failed with return code {exit_code}")
-                if settings.fail_fast:
-                    logger.warning("Fail fast enabled, exiting.")
-                    break
-            else:
-                logger.info(f"{task_path} completed successfully.")
+            if _handle_result(task_path, exit_code=_helper(task_path)):
+                logger.warning("Fail fast enabled, exiting.")
+                break
 
 
 if __name__ == "__main__":
