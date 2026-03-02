@@ -7,9 +7,9 @@
 import concurrent.futures as cf
 import logging
 import os
-import platform
 import signal
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import IO, Any, Callable
@@ -90,7 +90,7 @@ def _pipe_to_log(
 
 def _terminate_tree(proc: subprocess.Popen) -> None:
     """Terminate a process and all its children."""
-    if platform.system() == "Windows":
+    if sys.platform.startswith("win"):
         subprocess.run(
             ["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True
         )
@@ -110,7 +110,7 @@ def run_task(
 ) -> tuple[subprocess.Popen, threading.Thread, threading.Thread]:
     args = ["uv", "run"] + (uv_run_args or []) + [task_path] + (task_args or [])
     kwargs = dict(popen_kwargs or {})
-    if platform.system() != "Windows":
+    if sys.platform.startswith("win"):
         # Start the process in a new process group so we can terminate the whole tree if needed.
         kwargs.setdefault("start_new_session", True)
     logger.info(f"Running command: {' '.join(args)}")
