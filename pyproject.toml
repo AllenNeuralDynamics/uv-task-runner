@@ -1,15 +1,19 @@
 [project]
-name = "uv-plugin-architecture"
+name = "uv-task-runner"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
-    { name = "bjhardcastle", email = "ben.hardcastle@alleninstitute.org" }
+    { name = "bjhardcastle", email = "ben.hardcastle@alleninstitute.org" },
 ]
 requires-python = ">=3.13"
-dependencies = [
-    "pydantic-settings>=2.13.1",
-]
+dependencies = ["pydantic-settings>=2.13.1"]
+
+[project.scripts]
+task-runner = "uv_task_runner.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
 
 [build-system]
 requires = ["uv_build>=0.8.12,<0.9.0"]

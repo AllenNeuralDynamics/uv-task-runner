@@ -1,0 +1,23 @@
+# task_config.toml
+
+# Ordered list of task scripts to run; paths are relative to the config file. can also be github raw file URLs.
+task_paths = [
+    "scripts/script_a.py",
+    "https://gist.githubusercontent.com/TAJD/1d389deba4221343caef5155090674eb/raw/13984206c008fdb35d2d574fa76b682991f00a08/error_handling.py",
+    "scripts/script_b.py",
+    "scripts/script_c.py",
+]
+
+# Run tasks in parallel (default: true) false: runs one at a time, in order, as listed in task_paths)
+parallel = false
+
+# Stop all on failure of a task (default: true) false: allows all tasks to finish even if some fail
+fail_fast = true
+
+# Per-task overrides: keys must match entries in task_paths
+[tasks."scripts/script_a.py"]
+wait = true # wait for task to finish before continuing (default: true)
+task_args = ["--param1", "updated_value"] # args passed to the task script
+uv_args = [
+    "--quiet",
+] # args passed to `uv run`; replaces global uv args when set
