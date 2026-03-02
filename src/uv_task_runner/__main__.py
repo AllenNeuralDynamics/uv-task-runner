@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 from typing import IO, Any, Callable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     CliSettingsSource,
@@ -35,7 +35,7 @@ class Settings(BaseSettings):
 
     parallel: bool = True
     fail_fast: bool = True
-    log_level: str | int = logging.INFO
+    log_level: str | int = "INFO"
     # Buffer subprocess output and emit as a single log message per stream.
     # Keeps multiline output (e.g. stack traces) together. Set to false for
     # line-by-line logging (harder to read, but better compatibility).
@@ -57,6 +57,17 @@ class Settings(BaseSettings):
             CliSettingsSource(settings_cls, cli_parse_args=True, cli_kebab_case=True),
             TomlConfigSettingsSource(settings_cls, "task_runner.toml"),
         )
+
+    @field_validator("log_level")
+    def validate_log_level(cls, v: str | int) -> str:
+        if isinstance(v, str) and v.isnumeric() or isinstance(v, int):
+            v = int(v)
+        else:
+            v = v.upper()
+        valid = logging.getLevelName(v)
+        if not valid.isupper():
+            raise ValueError(f"Invalid log level: {v}")
+        return valid
 
 
 def _pipe_to_log(
@@ -129,7 +140,9 @@ def main():
 
     # start root logger
     logging.basicConfig(
-        level=settings.log_level, format="%(asctime)s | %(levelname)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S",
+        level=settings.log_level,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
 
     task_paths = settings.task_paths
@@ -177,9 +190,7 @@ def main():
                     )
                     for tp, proc in task_path_to_proc.items():
                         if proc.poll() is None:
-                            logger.warning(
-                                f"Terminating {tp} with PID {proc.pid}"
-                            )
+                            logger.warning(f"Terminating {tp} with PID {proc.pid}")
                             _terminate_tree(proc)
                     executor.shutdown(wait=False, cancel_futures=True)
                     break
@@ -194,6 +205,7 @@ def main():
             logger.warning(
                 f"{tp} with PID {proc.pid} is still running after main process completed: subsequent messages from the task will not be captured (Hint: set wait=true to change this behavior)"
             )
+
 
 if __name__ == "__main__":
     main()
