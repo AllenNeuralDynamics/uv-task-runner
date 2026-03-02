@@ -31,7 +31,18 @@ class TaskConfig(BaseModel):
     uv_run_args: list[str] = Field(default_factory=lambda: ["--quiet", "--script"])
 
 
+def _parse_config_path() -> str:
+    """Pre-parse --config before full settings initialization."""
+    import argparse
+
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", default="task_runner.toml")
+    args, _ = pre.parse_known_args(sys.argv[1:])
+    return args.config
+
+
 class Settings(BaseSettings):
+    _config_path: str = "task_runner.toml"
 
     parallel: bool = True
     fail_fast: bool = True
@@ -55,7 +66,7 @@ class Settings(BaseSettings):
         return (
             init_settings,
             CliSettingsSource(settings_cls, cli_parse_args=True, cli_kebab_case=True),
-            TomlConfigSettingsSource(settings_cls, "task_runner.toml"),
+            TomlConfigSettingsSource(settings_cls, cls._config_path),
         )
 
     @field_validator("log_level")
@@ -136,6 +147,7 @@ def run_task(
 
 
 def main():
+    Settings._config_path = _parse_config_path()
     settings = Settings()
 
     # start root logger
