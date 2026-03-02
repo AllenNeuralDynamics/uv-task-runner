@@ -130,7 +130,6 @@ def main():
     # start root logger
     logging.basicConfig(
         level=settings.log_level, format="%(asctime)s | %(levelname)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S",
-
     )
 
     task_paths = settings.task_paths
@@ -189,7 +188,12 @@ def main():
             if _handle_result(task_path, exit_code=_helper(task_path)):
                 logger.warning("Fail fast enabled, exiting.")
                 break
-
+    # warn if any processes still running
+    for tp, proc in task_path_to_proc.items():
+        if proc.poll() is None:
+            logger.warning(
+                f"{tp} with PID {proc.pid} is still running after main process completed: subsequent messages from the task will not be captured (Hint: set wait=true to change this behavior)"
+            )
 
 if __name__ == "__main__":
     main()
