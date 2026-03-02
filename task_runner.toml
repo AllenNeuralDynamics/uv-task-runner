@@ -1,23 +1,25 @@
 # task_runner.toml
+# Run tasks sequentially or in parallel. Each [[tasks]] entry is one task.
+# Paths are relative to this config file; can also be GitHub raw file URLs.
 
-# Ordered list of task scripts to run; paths are relative to the config file. can also be github raw file URLs.
-task_paths = [
-    "scripts/script_a.py",
-    "https://gist.githubusercontent.com/TAJD/1d389deba4221343caef5155090674eb/raw/13984206c008fdb35d2d574fa76b682991f00a08/error_handling.py",
-    "scripts/script_b.py",
-    "scripts/script_c.py",
-]
-
-# Run tasks in parallel (default: true) false: runs one at a time, in order, as listed in task_paths)
+# Run tasks in parallel (default: false); true: runs all tasks concurrently
 parallel = false
 
-# Stop all on failure of a task (default: true) false: allows all tasks to finish even if some fail
-fail_fast = true
+# Stop all on failure of a task (default: false); true: terminates remaining tasks on first failure
+fail_fast = false
 
-# Per-task overrides: keys must match entries in task_paths
-[task_configs."scripts/script_a.py"]
-wait = true # wait for task to finish before continuing (default: true)
-task_args = ["--param1", "updated_value"] # args passed to the task script
-uv_run_args = [
-    "--quiet",
-] # args passed to `uv run`; replaces global uv args when set
+    # Tasks are executed in order below if parallel=false:
+[[tasks]]
+task_path = "scripts/script_a.py"
+wait = false                           # allow task to keep running after main process exits
+task_args = ["--param1", "updated_value"]  # args passed to the task script
+
+[[tasks]]
+task_path = "https://gist.githubusercontent.com/TAJD/1d389deba4221343caef5155090674eb/raw/13984206c008fdb35d2d574fa76b682991f00a08/error_handling.py"
+
+[[tasks]]
+task_path = "scripts/script_b.py"
+uv_run_args = ["--python", "3.14", "--verbose", "--script", "--no-project"]
+
+[[tasks]]
+task_path = "scripts/script_c.py"

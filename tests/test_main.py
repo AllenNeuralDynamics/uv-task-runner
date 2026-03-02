@@ -6,20 +6,16 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from uv_task_runner import hello
-from uv_task_runner.__main__ import (
-    Settings,
-    TaskConfig,
-    _pipe_to_log,
-    _terminate_tree,
-    main,
-    run_task,
-)
+from uv_task_runner import Pipeline, PipelineResult, Settings, TaskConfig, TaskResult
+from uv_task_runner import run_tasks
+from uv_task_runner import task, utils
+from uv_task_runner.__main__ import _CliSettings, main
 
 
 @pytest.fixture(autouse=True)
@@ -29,16 +25,44 @@ def _clear_cli_argv(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# hello()
+# Helpers
 # ---------------------------------------------------------------------------
 
 
-class TestHello:
-    def test_returns_greeting(self):
-        assert hello() == "Hello from uv-task-runner!"
+def make_mock_handle(
+    task_path: str = "test.py",
+    returncode: int | None = 0,
+    still_running: bool = False,
+) -> task._TaskHandle:
+    """Build a task._TaskHandle with a mock process for use in tests."""
+    proc = MagicMock()
+    proc.pid = abs(hash(task_path)) % 10000 or 1
+    proc.returncode = returncode
+    proc.poll.return_value = None if still_running else returncode
+    proc.wait.return_value = returncode
+    proc.stdout = io.StringIO("")
+    proc.stderr = io.StringIO("")
+    return task._TaskHandle(
+        process=proc,
+        stdout_thread=MagicMock(),
+        stderr_thread=MagicMock(),
+        stdout_capture=["stdout content"] if returncode == 0 else [],
+        stderr_capture=[] if returncode == 0 else ["error output"],
+        task_path=task_path,
+        start_time=time.monotonic(),
+    )
 
-    def test_return_type(self):
-        assert isinstance(hello(), str)
+
+def make_pipeline(**overrides) -> Pipeline:
+    """Build a Pipeline with test-friendly defaults."""
+    defaults = dict(
+        tasks=[TaskConfig(task_path="a.py"), TaskConfig(task_path="b.py")],
+        parallel=True,
+        fail_fast=True,
+        log_multiline=True,
+    )
+    defaults.update(overrides)
+    return Pipeline(**defaults)
 
 
 # ---------------------------------------------------------------------------
@@ -46,12 +70,22 @@ class TestHello:
 # ---------------------------------------------------------------------------
 
 
-class TesttaskConfig:
+class TestTaskConfig:
+    def test_requires_task_path(self):
+        with pytest.raises(Exception):
+            TaskConfig()  # task_path is required
+
     def test_defaults(self):
-        _ = TaskConfig()
+        cfg = TaskConfig(task_path="script.py")
+        assert cfg.wait is True
+        assert cfg.task_args == []
+        assert cfg.uv_run_args == ["--quiet", "--script"]
+        assert cfg.on_task_start is None
+        assert cfg.on_task_end is None
 
     def test_custom_values(self):
         cfg = TaskConfig(
+            task_path="script.py",
             wait=False,
             task_args=["--foo", "bar"],
             uv_run_args=["--verbose"],
@@ -62,16 +96,34 @@ class TesttaskConfig:
 
     def test_default_factory_independence(self):
         """Each instance should get its own list, not a shared reference."""
-        a = TaskConfig()
-        b = TaskConfig()
+        a = TaskConfig(task_path="a.py")
+        b = TaskConfig(task_path="b.py")
         a.task_args.append("x")
         assert "x" not in b.task_args
 
     def test_uv_run_args_default_factory_independence(self):
-        a = TaskConfig()
-        b = TaskConfig()
+        a = TaskConfig(task_path="a.py")
+        b = TaskConfig(task_path="b.py")
         a.uv_run_args.append("--extra")
         assert "--extra" not in b.uv_run_args
+
+    def test_accepts_callable_hooks(self):
+        called = []
+        cfg = TaskConfig(
+            task_path="x.py",
+            on_task_start=lambda path, pid: called.append(("start", path, pid)),
+            on_task_end=lambda path, result: called.append(("end", path)),
+        )
+        assert cfg.on_task_start is not None
+        assert cfg.on_task_end is not None
+
+    def test_accepts_list_of_hooks(self):
+        cfg = TaskConfig(
+            task_path="x.py",
+            on_task_start=[lambda path, pid: None, lambda path, pid: None],
+        )
+        assert isinstance(cfg.on_task_start, list)
+        assert len(cfg.on_task_start) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -80,55 +132,80 @@ class TesttaskConfig:
 
 
 class TestSettings:
-    def test_defaults_without_toml(self, tmp_path, monkeypatch):
-        """With no TOML file present, all fields use their defaults."""
-        monkeypatch.chdir(tmp_path)
+    def test_defaults(self):
+        """Library-safe Settings() uses only init kwargs — no CLI, no TOML."""
         s = Settings()
-        assert s.parallel is True
-        assert s.fail_fast is True
-        assert s.log_multiline is True
-        assert s.task_paths == []
-        assert s.task_configs == {}
+        assert s.parallel is False
+        assert s.fail_fast is False
+        assert s.dry_run is False
+        assert s.log_multiline is False
+        assert s.tasks == []
+
+    def test_init_kwargs(self):
+        tasks = [TaskConfig(task_path="a.py")]
+        s = Settings(tasks=tasks, parallel=False, fail_fast=False)
+        assert s.parallel is False
+        assert s.fail_fast is False
+        assert s.tasks == tasks
+
+    def test_no_cli_parsing(self, monkeypatch):
+        """Settings() must not fail when sys.argv contains pytest args."""
+        monkeypatch.setattr(sys, "argv", ["pytest", "--some-unknown-flag", "blah"])
+        # Should not raise
+        Settings()
+
+    def test_log_level_validates_string(self):
+        s = Settings(log_level="debug")
+        assert s.log_level == "DEBUG"
+
+    def test_log_level_validates_int(self):
+        s = Settings(log_level=20)
+        assert s.log_level == "INFO"
+
+    def test_log_level_rejects_invalid(self):
+        with pytest.raises(Exception):
+            Settings(log_level="NOTAREAL")
+
+
+class TestCliSettings:
+    """_CliSettings loads from TOML and CLI args (used only by main())."""
 
     def test_loads_from_toml(self, tmp_path, monkeypatch):
         toml = tmp_path / "task_runner.toml"
         toml.write_text(
-            'task_paths = ["a.py", "b.py"]\n'
             "parallel = false\n"
             "fail_fast = false\n"
             "log_multiline = false\n"
             "\n"
-            '[task_configs."a.py"]\n'
+            "[[tasks]]\n"
+            'task_path = "a.py"\n'
             "wait = false\n"
             'task_args = ["--x"]\n'
+            "\n"
+            "[[tasks]]\n"
+            'task_path = "b.py"\n'
         )
-        monkeypatch.chdir(tmp_path)
-        s = Settings()
+        monkeypatch.setattr(
+            sys, "argv", ["__main__.py", "--config", str(toml)]
+        )
+        s = _CliSettings()
         assert s.parallel is False
         assert s.fail_fast is False
         assert s.log_multiline is False
-        assert s.task_paths == ["a.py", "b.py"]
-        assert "a.py" in s.task_configs
-        assert s.task_configs["a.py"].wait is False
-        assert s.task_configs["a.py"].task_args == ["--x"]
+        assert len(s.tasks) == 2
+        assert s.tasks[0].task_path == "a.py"
+        assert s.tasks[0].wait is False
+        assert s.tasks[0].task_args == ["--x"]
+        assert s.tasks[1].task_path == "b.py"
 
     def test_init_kwargs_override_toml(self, tmp_path, monkeypatch):
         toml = tmp_path / "task_runner.toml"
         toml.write_text("parallel = false\n")
-        monkeypatch.chdir(tmp_path)
-        s = Settings(parallel=True)
+        monkeypatch.setattr(
+            sys, "argv", ["__main__.py", "--config", str(toml)]
+        )
+        s = _CliSettings(parallel=True)
         assert s.parallel is True
-
-    def test_task_config_defaults_for_unlisted_task(self, tmp_path, monkeypatch):
-        """A task not listed in [tasks] should get default TaskConfig."""
-        toml = tmp_path / "task_runner.toml"
-        toml.write_text('task_paths = ["x.py"]\n')
-        monkeypatch.chdir(tmp_path)
-        s = Settings()
-        cfg = s.task_configs.get("x.py", TaskConfig())
-        assert cfg.wait is True
-        assert cfg.task_args == []
-        assert cfg.uv_run_args == ["--quiet", "--script"]
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +218,7 @@ class TestPipeToLog:
         """When buffer_output=True, all content emitted as one log call."""
         stream = io.StringIO("line1\nline2\nline3\n")
         log_fn = MagicMock()
-        _pipe_to_log(stream, log_fn, prefix="[test] ", buffer_output=True)
+        task._pipe_to_log(stream, log_fn, prefix="[test] ", buffer_output=True)
         log_fn.assert_called_once()
         msg = log_fn.call_args[0][0]
         assert msg.startswith("[test] ")
@@ -152,7 +229,7 @@ class TestPipeToLog:
     def test_buffered_strips_trailing_whitespace(self):
         stream = io.StringIO("hello\n\n")
         log_fn = MagicMock()
-        _pipe_to_log(stream, log_fn, prefix="", buffer_output=True)
+        task._pipe_to_log(stream, log_fn, prefix="", buffer_output=True)
         msg = log_fn.call_args[0][0]
         assert not msg.endswith("\n")
 
@@ -160,7 +237,7 @@ class TestPipeToLog:
         """Empty or whitespace-only stream should not produce a log call."""
         for content in ["", "   ", "\n", "  \n  "]:
             log_fn = MagicMock()
-            _pipe_to_log(
+            task._pipe_to_log(
                 io.StringIO(content), log_fn, prefix="[x] ", buffer_output=True
             )
             log_fn.assert_not_called()
@@ -169,7 +246,7 @@ class TestPipeToLog:
         """When buffer_output=False, each line is a separate log call."""
         stream = io.StringIO("a\nb\nc\n")
         log_fn = MagicMock()
-        _pipe_to_log(stream, log_fn, prefix="[p] ", buffer_output=False)
+        task._pipe_to_log(stream, log_fn, prefix="[p] ", buffer_output=False)
         assert log_fn.call_count == 3
         log_fn.assert_any_call("[p] a")
         log_fn.assert_any_call("[p] b")
@@ -178,20 +255,20 @@ class TestPipeToLog:
     def test_line_by_line_strips_newlines(self):
         stream = io.StringIO("hello\n")
         log_fn = MagicMock()
-        _pipe_to_log(stream, log_fn, prefix="", buffer_output=False)
+        task._pipe_to_log(stream, log_fn, prefix="", buffer_output=False)
         msg = log_fn.call_args[0][0]
         assert msg == "hello"
 
     def test_line_by_line_empty_stream(self):
         stream = io.StringIO("")
         log_fn = MagicMock()
-        _pipe_to_log(stream, log_fn, prefix="", buffer_output=False)
+        task._pipe_to_log(stream, log_fn, prefix="", buffer_output=False)
         log_fn.assert_not_called()
 
     def test_prefix_included(self):
         stream = io.StringIO("msg\n")
         log_fn = MagicMock()
-        _pipe_to_log(stream, log_fn, prefix="[task_a.py:123] ", buffer_output=False)
+        task._pipe_to_log(stream, log_fn, prefix="[task_a.py:123] ", buffer_output=False)
         assert log_fn.call_args[0][0] == "[task_a.py:123] msg"
 
     def test_multiline_content_kept_together_in_buffered_mode(self):
@@ -204,11 +281,37 @@ class TestPipeToLog:
         )
         stream = io.StringIO(traceback_text)
         log_fn = MagicMock()
-        _pipe_to_log(stream, log_fn, prefix="[err] ", buffer_output=True)
+        task._pipe_to_log(stream, log_fn, prefix="[err] ", buffer_output=True)
         log_fn.assert_called_once()
         msg = log_fn.call_args[0][0]
         assert "Traceback" in msg
         assert "ValueError: boom" in msg
+
+    def test_capture_buffered(self):
+        """capture list receives the full content in buffered mode."""
+        stream = io.StringIO("line1\nline2\n")
+        log_fn = MagicMock()
+        capture: list[str] = []
+        task._pipe_to_log(stream, log_fn, prefix="", buffer_output=True, capture=capture)
+        assert capture == ["line1\nline2\n"]
+
+    def test_capture_line_by_line(self):
+        """capture list receives all lines joined in line-by-line mode."""
+        stream = io.StringIO("a\nb\n")
+        log_fn = MagicMock()
+        capture: list[str] = []
+        task._pipe_to_log(stream, log_fn, prefix="", buffer_output=False, capture=capture)
+        assert len(capture) == 1
+        assert "a\n" in capture[0]
+        assert "b\n" in capture[0]
+
+    def test_capture_empty_stream(self):
+        """capture receives empty string for empty stream in buffered mode."""
+        stream = io.StringIO("")
+        log_fn = MagicMock()
+        capture: list[str] = []
+        task._pipe_to_log(stream, log_fn, prefix="", buffer_output=True, capture=capture)
+        assert capture == [""]
 
 
 # ---------------------------------------------------------------------------
@@ -217,39 +320,65 @@ class TestPipeToLog:
 
 
 class TestTerminateTree:
-    @patch("uv_task_runner.__main__.subprocess.run")
-    @patch("uv_task_runner.__main__.platform.system", return_value="Windows")
-    def test_windows_uses_taskkill(self, mock_platform_system, mock_run):
-        proc = MagicMock()
-        proc.pid = 9999
-        _terminate_tree(proc)
+    @patch("uv_task_runner.task.subprocess.run")
+    def test_windows_uses_taskkill(self, mock_run):
+        with patch("uv_task_runner.task.sys.platform", "win32"):
+            proc = MagicMock()
+            proc.pid = 9999
+            task._terminate_tree(proc)
         mock_run.assert_called_once_with(
             ["taskkill", "/F", "/T", "/PID", "9999"], capture_output=True
         )
 
-    @patch("uv_task_runner.__main__.platform.system", return_value="Linux")
-    @patch("uv_task_runner.__main__.os.killpg", create=True)
-    @patch("uv_task_runner.__main__.os.getpgid", return_value=42, create=True)
-    def test_unix_uses_killpg(self, mock_getpgid, mock_killpg, mock_platform_system):
-        proc = MagicMock()
-        proc.pid = 1234
-        _terminate_tree(proc)
+    @patch("uv_task_runner.task.os.killpg", create=True)
+    @patch("uv_task_runner.task.os.getpgid", return_value=42, create=True)
+    def test_unix_uses_killpg(self, mock_getpgid, mock_killpg):
+        with patch("uv_task_runner.task.sys.platform", "linux"):
+            proc = MagicMock()
+            proc.pid = 1234
+            task._terminate_tree(proc)
         mock_getpgid.assert_called_once_with(1234)
         mock_killpg.assert_called_once_with(42, signal.SIGTERM)
 
-    @patch("uv_task_runner.__main__.platform.system", return_value="Linux")
-    @patch("uv_task_runner.__main__.os.killpg", create=True)
     @patch(
-        "uv_task_runner.__main__.os.getpgid",
+        "uv_task_runner.task.os.getpgid",
         side_effect=ProcessLookupError,
         create=True,
     )
-    def test_unix_handles_already_terminated(self, mock_getpgid, mock_killpg, mock_platform_system):
-        proc = MagicMock()
-        proc.pid = 1234
-        # Should not raise
-        _terminate_tree(proc)
+    @patch("uv_task_runner.task.os.killpg", create=True)
+    def test_unix_handles_already_terminated(self, mock_killpg, mock_getpgid):
+        with patch("uv_task_runner.task.sys.platform", "linux"):
+            proc = MagicMock()
+            proc.pid = 1234
+            # Should not raise
+            task._terminate_tree(proc)
         mock_killpg.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _call_hooks
+# ---------------------------------------------------------------------------
+
+
+class TestCallHooks:
+    def test_single_callable(self):
+        calls = []
+        utils._call_hooks(lambda x: calls.append(x), "arg1")
+        assert calls == ["arg1"]
+
+    def test_list_of_callables(self):
+        calls = []
+        utils._call_hooks([lambda x: calls.append(f"a:{x}"), lambda x: calls.append(f"b:{x}")], "v")
+        assert calls == ["a:v", "b:v"]
+
+    def test_none_is_noop(self):
+        # Should not raise
+        utils._call_hooks(None, "ignored")
+
+    def test_multiple_args(self):
+        calls = []
+        utils._call_hooks(lambda a, b: calls.append((a, b)), "x", 42)
+        assert calls == [("x", 42)]
 
 
 # ---------------------------------------------------------------------------
@@ -257,8 +386,8 @@ class TestTerminateTree:
 # ---------------------------------------------------------------------------
 
 
-class TestRuntask:
-    @patch("uv_task_runner.__main__.subprocess.Popen")
+class TestRunTask:
+    @patch("uv_task_runner.task.subprocess.Popen")
     def test_builds_correct_command(self, mock_popen):
         mock_proc = MagicMock()
         mock_proc.pid = 100
@@ -266,40 +395,40 @@ class TestRuntask:
         mock_proc.stderr = io.StringIO("")
         mock_popen.return_value = mock_proc
 
-        run_task("tasks/test.py", task_args=["--a", "1"], uv_run_args=["--quiet"])
+        cfg = TaskConfig(task_path="tasks/test.py", task_args=["--a", "1"], uv_run_args=["--quiet"])
+        task.run_task(cfg)
 
         args = mock_popen.call_args[0][0]
         assert args == ["uv", "run", "--quiet", "tasks/test.py", "--a", "1"]
 
-    @patch("uv_task_runner.__main__.subprocess.Popen")
-    def test_default_args_are_empty(self, mock_popen):
+    @patch("uv_task_runner.task.subprocess.Popen")
+    def test_default_uv_run_args(self, mock_popen):
         mock_proc = MagicMock()
         mock_proc.pid = 100
         mock_proc.stdout = io.StringIO("")
         mock_proc.stderr = io.StringIO("")
         mock_popen.return_value = mock_proc
 
-        run_task("script.py")
+        task.run_task(TaskConfig(task_path="script.py"))
 
         args = mock_popen.call_args[0][0]
-        assert args == ["uv", "run", "script.py"]
+        assert args == ["uv", "run", "--quiet", "--script", "script.py"]
 
-    @patch("uv_task_runner.__main__.subprocess.Popen")
-    def test_returns_process_and_threads(self, mock_popen):
+    @patch("uv_task_runner.task.subprocess.Popen")
+    def test_returns_task_handle(self, mock_popen):
         mock_proc = MagicMock()
         mock_proc.pid = 100
         mock_proc.stdout = io.StringIO("")
         mock_proc.stderr = io.StringIO("")
         mock_popen.return_value = mock_proc
 
-        result = run_task("s.py")
-        assert len(result) == 3
-        proc, t1, t2 = result
-        assert proc is mock_proc
-        assert isinstance(t1, threading.Thread)
-        assert isinstance(t2, threading.Thread)
+        handle = task.run_task(TaskConfig(task_path="s.py"))
+        assert isinstance(handle, task._TaskHandle)
+        assert handle.process is mock_proc
+        assert isinstance(handle.stdout_thread, threading.Thread)
+        assert isinstance(handle.stderr_thread, threading.Thread)
 
-    @patch("uv_task_runner.__main__.subprocess.Popen")
+    @patch("uv_task_runner.task.subprocess.Popen")
     def test_threads_are_daemon(self, mock_popen):
         mock_proc = MagicMock()
         mock_proc.pid = 100
@@ -307,11 +436,11 @@ class TestRuntask:
         mock_proc.stderr = io.StringIO("")
         mock_popen.return_value = mock_proc
 
-        _, t1, t2 = run_task("s.py")
-        assert t1.daemon is True
-        assert t2.daemon is True
+        handle = task.run_task(TaskConfig(task_path="s.py"))
+        assert handle.stdout_thread.daemon is True
+        assert handle.stderr_thread.daemon is True
 
-    @patch("uv_task_runner.__main__.subprocess.Popen")
+    @patch("uv_task_runner.task.subprocess.Popen")
     def test_popen_uses_pipe_and_text(self, mock_popen):
         mock_proc = MagicMock()
         mock_proc.pid = 100
@@ -319,28 +448,27 @@ class TestRuntask:
         mock_proc.stderr = io.StringIO("")
         mock_popen.return_value = mock_proc
 
-        run_task("s.py")
+        task.run_task(TaskConfig(task_path="s.py"))
 
         _, kwargs = mock_popen.call_args
         assert kwargs["stdout"] == subprocess.PIPE
         assert kwargs["stderr"] == subprocess.PIPE
         assert kwargs["text"] is True
 
-    @patch("uv_task_runner.__main__.platform.system", return_value="Linux")
-    @patch("uv_task_runner.__main__.subprocess.Popen")
-    def test_unix_sets_new_session(self, mock_popen, mock_platform_system):
+    @patch("uv_task_runner.task.subprocess.Popen")
+    def test_start_new_session_set(self, mock_popen):
         mock_proc = MagicMock()
         mock_proc.pid = 100
         mock_proc.stdout = io.StringIO("")
         mock_proc.stderr = io.StringIO("")
         mock_popen.return_value = mock_proc
 
-        run_task("s.py")
+        task.run_task(TaskConfig(task_path="s.py"))
 
         _, kwargs = mock_popen.call_args
         assert kwargs.get("start_new_session") is True
 
-    @patch("uv_task_runner.__main__.subprocess.Popen")
+    @patch("uv_task_runner.task.subprocess.Popen")
     def test_popen_kwargs_forwarded(self, mock_popen):
         mock_proc = MagicMock()
         mock_proc.pid = 100
@@ -348,30 +476,145 @@ class TestRuntask:
         mock_proc.stderr = io.StringIO("")
         mock_popen.return_value = mock_proc
 
-        run_task("s.py", popen_kwargs={"cwd": "/tmp"})
+        task.run_task(TaskConfig(task_path="s.py"), popen_kwargs={"cwd": "/tmp"})
 
         _, kwargs = mock_popen.call_args
         assert kwargs["cwd"] == "/tmp"
 
-    @patch("uv_task_runner.__main__.subprocess.Popen")
-    def test_logging_prefix_includes_pid(self, mock_popen):
-        """The prefix passed to _pipe_to_log should include the task name and PID."""
+    @patch("uv_task_runner.task.subprocess.Popen")
+    def test_on_task_start_called_with_path_and_pid(self, mock_popen):
         mock_proc = MagicMock()
         mock_proc.pid = 42
-        mock_proc.stdout = io.StringIO("hello\n")
+        mock_proc.stdout = io.StringIO("")
         mock_proc.stderr = io.StringIO("")
         mock_popen.return_value = mock_proc
 
-        proc, t1, t2 = run_task("tasks/my_task.py")
-        # Wait for threads to finish processing
-        t1.join(timeout=2)
-        t2.join(timeout=2)
+        calls = []
+        cfg = TaskConfig(
+            task_path="tasks/my_task.py",
+            on_task_start=lambda path, pid: calls.append((path, pid)),
+        )
+        task.run_task(cfg)
+        # Wait for threads to start
+        assert calls == [("tasks/my_task.py", 42)]
 
-        # The prefix format is "[filename:PID] "
-        expected_prefix = "[my_task.py:42] "
-        assert proc.pid == 42
-        # Verify via the Path-based prefix logic:
+    @patch("uv_task_runner.task.subprocess.Popen")
+    def test_handle_has_correct_task_path(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.pid = 42
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.stderr = io.StringIO("")
+        mock_popen.return_value = mock_proc
+
+        handle = task.run_task(TaskConfig(task_path="tasks/my_task.py"))
+        assert handle.task_path == "tasks/my_task.py"
         assert Path("tasks/my_task.py").name == "my_task.py"
+
+
+# ---------------------------------------------------------------------------
+# _collect_result
+# ---------------------------------------------------------------------------
+
+
+class TestCollectResult:
+    def test_wait_true_returns_result(self):
+        proc = MagicMock()
+        proc.pid = 1
+        proc.returncode = 0
+        handle = task._TaskHandle(
+            process=proc,
+            stdout_thread=MagicMock(),
+            stderr_thread=MagicMock(),
+            stdout_capture=["hello\n"],
+            stderr_capture=[],
+            task_path="test.py",
+            start_time=time.monotonic() - 0.1,
+        )
+        result = task._collect_result(handle, wait=True)
+        proc.wait.assert_called_once()
+        assert result.exit_code == 0
+        assert result.success is True
+        assert result.stdout == "hello\n"
+        assert result.stderr == ""
+        assert result.pid == 1
+        assert result.task_path == "test.py"
+        assert result.duration_seconds >= 0.0
+
+    def test_wait_false_no_process_wait(self):
+        proc = MagicMock()
+        proc.pid = 5
+        proc.returncode = None  # still running
+        handle = task._TaskHandle(
+            process=proc,
+            stdout_thread=MagicMock(),
+            stderr_thread=MagicMock(),
+            stdout_capture=[],
+            stderr_capture=[],
+            task_path="bg.py",
+            start_time=time.monotonic(),
+        )
+        result = task._collect_result(handle, wait=False)
+        proc.wait.assert_not_called()
+        assert result.exit_code is None
+        assert result.success is False  # None != 0
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    def test_nonzero_exit_code(self):
+        proc = MagicMock()
+        proc.pid = 2
+        proc.returncode = 1
+        handle = task._TaskHandle(
+            process=proc,
+            stdout_thread=MagicMock(),
+            stderr_thread=MagicMock(),
+            stdout_capture=[],
+            stderr_capture=["error\n"],
+            task_path="fail.py",
+            start_time=time.monotonic(),
+        )
+        result = task._collect_result(handle, wait=True)
+        assert result.exit_code == 1
+        assert result.success is False
+        assert result.stderr == "error\n"
+
+
+# ---------------------------------------------------------------------------
+# TaskResult
+# ---------------------------------------------------------------------------
+
+
+class TestTaskResult:
+    def test_fields(self):
+        r = TaskResult(
+            task_path="a.py",
+            exit_code=0,
+            success=True,
+            duration_seconds=1.5,
+            stdout="output",
+            stderr="",
+            pid=1234,
+        )
+        assert r.task_path == "a.py"
+        assert r.exit_code == 0
+        assert r.success is True
+        assert r.duration_seconds == 1.5
+        assert r.stdout == "output"
+        assert r.stderr == ""
+        assert r.pid == 1234
+
+    def test_wait_false_result(self):
+        r = TaskResult(
+            task_path="bg.py",
+            exit_code=None,
+            success=False,
+            duration_seconds=0.0,
+            stdout="",
+            stderr="",
+            pid=9999,
+        )
+        assert r.exit_code is None
+        assert r.stdout == ""
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +623,7 @@ class TestRuntask:
 
 
 class TestLoggingOutput:
-    @patch("uv_task_runner.__main__.subprocess.Popen")
+    @patch("uv_task_runner.task.subprocess.Popen")
     def test_run_task_logs_task_path(self, mock_popen, caplog):
         mock_proc = MagicMock()
         mock_proc.pid = 1
@@ -388,13 +631,13 @@ class TestLoggingOutput:
         mock_proc.stderr = io.StringIO("")
         mock_popen.return_value = mock_proc
 
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            run_task("tasks/test.py", task_args=["--a"])
+        with caplog.at_level(logging.INFO, logger="uv_task_runner.task"):
+            task.run_task(TaskConfig(task_path="tasks/test.py", task_args=["--a"]))
 
         assert any("Running command:" in r.message for r in caplog.records)
         assert any("tasks/test.py" in r.message and "--a" in r.message for r in caplog.records)
 
-    @patch("uv_task_runner.__main__.subprocess.Popen")
+    @patch("uv_task_runner.task.subprocess.Popen")
     def test_stdout_piped_to_info_log(self, mock_popen, caplog):
         mock_proc = MagicMock()
         mock_proc.pid = 5
@@ -402,14 +645,14 @@ class TestLoggingOutput:
         mock_proc.stderr = io.StringIO("")
         mock_popen.return_value = mock_proc
 
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            proc, t1, t2 = run_task("p.py")
-            t1.join(timeout=2)
-            t2.join(timeout=2)
+        with caplog.at_level(logging.INFO, logger="uv_task_runner.task"):
+            handle = task.run_task(TaskConfig(task_path="p.py"))
+            handle.stdout_thread.join(timeout=2)
+            handle.stderr_thread.join(timeout=2)
 
         assert any("task output" in r.message for r in caplog.records)
 
-    @patch("uv_task_runner.__main__.subprocess.Popen")
+    @patch("uv_task_runner.task.subprocess.Popen")
     def test_stderr_piped_to_info_log(self, mock_popen, caplog):
         mock_proc = MagicMock()
         mock_proc.pid = 5
@@ -417,14 +660,14 @@ class TestLoggingOutput:
         mock_proc.stderr = io.StringIO("error output\n")
         mock_popen.return_value = mock_proc
 
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            proc, t1, t2 = run_task("p.py")
-            t1.join(timeout=2)
-            t2.join(timeout=2)
+        with caplog.at_level(logging.INFO, logger="uv_task_runner.task"):
+            handle = task.run_task(TaskConfig(task_path="p.py"))
+            handle.stdout_thread.join(timeout=2)
+            handle.stderr_thread.join(timeout=2)
 
         assert any("error output" in r.message for r in caplog.records)
 
-    @patch("uv_task_runner.__main__.subprocess.Popen")
+    @patch("uv_task_runner.task.subprocess.Popen")
     def test_log_prefix_format(self, mock_popen, caplog):
         """Log messages from task output should have [filename:PID] prefix."""
         mock_proc = MagicMock()
@@ -433,16 +676,16 @@ class TestLoggingOutput:
         mock_proc.stderr = io.StringIO("")
         mock_popen.return_value = mock_proc
 
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            _, t1, t2 = run_task("tasks/demo.py")
-            t1.join(timeout=2)
-            t2.join(timeout=2)
+        with caplog.at_level(logging.INFO, logger="uv_task_runner.task"):
+            handle = task.run_task(TaskConfig(task_path="tasks/demo.py"))
+            handle.stdout_thread.join(timeout=2)
+            handle.stderr_thread.join(timeout=2)
 
         output_records = [r for r in caplog.records if "hello" in r.message]
         assert len(output_records) == 1
         assert output_records[0].message.startswith("[demo.py:999] ")
 
-    @patch("uv_task_runner.__main__.subprocess.Popen")
+    @patch("uv_task_runner.task.subprocess.Popen")
     def test_multiline_output_buffered_as_single_record(self, mock_popen, caplog):
         """With log_multiline=True, multiline output is one log record."""
         mock_proc = MagicMock()
@@ -451,17 +694,17 @@ class TestLoggingOutput:
         mock_proc.stderr = io.StringIO("")
         mock_popen.return_value = mock_proc
 
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            _, t1, t2 = run_task("p.py", log_multiline=True)
-            t1.join(timeout=2)
-            t2.join(timeout=2)
+        with caplog.at_level(logging.INFO, logger="uv_task_runner.task"):
+            handle = task.run_task(TaskConfig(task_path="p.py"), log_multiline=True)
+            handle.stdout_thread.join(timeout=2)
+            handle.stderr_thread.join(timeout=2)
 
         output_records = [r for r in caplog.records if "line1" in r.message]
         assert len(output_records) == 1
         assert "line2" in output_records[0].message
         assert "line3" in output_records[0].message
 
-    @patch("uv_task_runner.__main__.subprocess.Popen")
+    @patch("uv_task_runner.task.subprocess.Popen")
     def test_line_by_line_output_separate_records(self, mock_popen, caplog):
         """With log_multiline=False, each line is a separate log record."""
         mock_proc = MagicMock()
@@ -470,10 +713,10 @@ class TestLoggingOutput:
         mock_proc.stderr = io.StringIO("")
         mock_popen.return_value = mock_proc
 
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            _, t1, t2 = run_task("p.py", log_multiline=False)
-            t1.join(timeout=2)
-            t2.join(timeout=2)
+        with caplog.at_level(logging.INFO, logger="uv_task_runner.task"):
+            handle = task.run_task(TaskConfig(task_path="p.py"), log_multiline=False)
+            handle.stdout_thread.join(timeout=2)
+            handle.stderr_thread.join(timeout=2)
 
         output_messages = [
             r.message
@@ -484,510 +727,331 @@ class TestLoggingOutput:
 
 
 # ---------------------------------------------------------------------------
-# main() – parallel mode
+# Pipeline – parallel mode
 # ---------------------------------------------------------------------------
 
 
-class TestMainParallel:
-    """Tests for main() when settings.parallel is True."""
+class TestPipelineParallel:
+    def _patch_run_task(self, outcomes: dict[str, int | None]):
+        """Return a context manager that patches run_task with controlled outcomes."""
+        def fake_run(task_config, **kwargs):
+            rc = outcomes.get(task_config.task_path, 0)
+            return make_mock_handle(task_config.task_path, returncode=rc)
 
-    def _make_settings(self, **overrides):
-        defaults = dict(
-            parallel=True,
-            fail_fast=True,
-            log_multiline=True,
-            task_paths=["a.py", "b.py"],
-            task_configs={},
-        )
-        defaults.update(overrides)
-        return Settings(**defaults)
+        return patch("uv_task_runner.task.run_task", side_effect=fake_run)
 
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_all_tasks_succeed(self, mock_settings_cls, mock_run_task, caplog):
-        settings = self._make_settings(task_paths=["a.py", "b.py"])
-        mock_settings_cls.return_value = settings
-
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            proc.returncode = 0
-            proc.wait.return_value = 0
-            proc.poll.return_value = 0
-            t1 = MagicMock()
-            t2 = MagicMock()
-            return proc, t1, t2
-
-        mock_run_task.side_effect = fake_run
-
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            main()
-
-        assert mock_run_task.call_count == 2
+    def test_all_tasks_succeed(self, caplog):
+        pipeline = make_pipeline(tasks=[TaskConfig(task_path="a.py"), TaskConfig(task_path="b.py")])
+        with self._patch_run_task({"a.py": 0, "b.py": 0}):
+            with caplog.at_level(logging.INFO):
+                result = pipeline.run()
+        assert not result.aborted
+        assert len(result.task_results) == 2
+        assert all(r.success for r in result.task_results)
         assert any("completed successfully" in r.message for r in caplog.records)
 
-    @patch("uv_task_runner.__main__._terminate_tree")
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_fail_fast_terminates_running(
-        self, mock_settings_cls, mock_run_task, mock_term, caplog
-    ):
-        settings = self._make_settings(
-            task_paths=["fast_fail.py", "slow.py"],
+    @patch("uv_task_runner.task._terminate_tree")
+    def test_fail_fast_terminates_running(self, mock_term, caplog):
+        still_running_proc = MagicMock()
+        still_running_proc.pid = 200
+        still_running_proc.poll.return_value = None  # still running
+
+        def fake_run(task_config, **kwargs):
+            if "fail" in task_config.task_path:
+                return make_mock_handle(task_config.task_path, returncode=1)
+            else:
+                handle = make_mock_handle(task_config.task_path, still_running=True)
+                handle.process = still_running_proc
+                return handle
+
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="fail.py"), TaskConfig(task_path="slow.py")],
             fail_fast=True,
         )
-        mock_settings_cls.return_value = settings
+        with patch("uv_task_runner.task.run_task", side_effect=fake_run):
+            with caplog.at_level(logging.INFO):
+                result = pipeline.run()
 
-        slow_proc = MagicMock()
-        slow_proc.pid = 2
-        slow_proc.poll.return_value = None  # still running
-
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            if "fast_fail" in task_path:
-                proc.pid = 1
-                proc.returncode = 1
-                proc.wait.return_value = 1
-                proc.poll.return_value = 1
-            else:
-                proc.pid = 2
-                proc.returncode = None
-                proc.wait.side_effect = (
-                    lambda: setattr(proc, "returncode", 1) or proc.returncode
-                )
-                proc.poll.return_value = None  # still running
-            t1 = MagicMock()
-            t2 = MagicMock()
-            return proc, t1, t2
-
-        mock_run_task.side_effect = fake_run
-
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            main()
-
+        assert result.aborted
         assert any("failed with exit code" in r.message for r in caplog.records)
         assert any("Fail fast enabled" in r.message for r in caplog.records)
 
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_fail_fast_disabled_continues(
-        self, mock_settings_cls, mock_run_task, caplog
-    ):
-        settings = self._make_settings(
-            task_paths=["fail.py", "ok.py"],
+    def test_fail_fast_disabled_continues(self, caplog):
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="fail.py"), TaskConfig(task_path="ok.py")],
             fail_fast=False,
         )
-        mock_settings_cls.return_value = settings
+        call_count = [0]
 
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            if "fail" in task_path:
-                proc.returncode = 1
-                proc.wait.return_value = 1
-            else:
-                proc.returncode = 0
-                proc.wait.return_value = 0
-            proc.poll.return_value = proc.returncode
-            t1 = MagicMock()
-            t2 = MagicMock()
-            return proc, t1, t2
+        def fake_run(task_config, **kwargs):
+            call_count[0] += 1
+            rc = 1 if "fail" in task_config.task_path else 0
+            return make_mock_handle(task_config.task_path, returncode=rc)
 
-        mock_run_task.side_effect = fake_run
+        with patch("uv_task_runner.task.run_task", side_effect=fake_run):
+            result = pipeline.run()
 
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            main()
+        assert not result.aborted
+        assert call_count[0] == 2
 
-        # Both tasks should have been run
-        assert mock_run_task.call_count == 2
-
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_logs_error_on_failure(self, mock_settings_cls, mock_run_task, caplog):
-        settings = self._make_settings(
-            task_paths=["bad.py"],
-            fail_fast=False,
-        )
-        mock_settings_cls.return_value = settings
-
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            proc.returncode = 1
-            proc.wait.return_value = 1
-            proc.poll.return_value = 1
-            return proc, MagicMock(), MagicMock()
-
-        mock_run_task.side_effect = fake_run
-
-        with caplog.at_level(logging.ERROR, logger="uv_task_runner.__main__"):
-            main()
+    def test_logs_error_on_failure(self, caplog):
+        pipeline = make_pipeline(tasks=[TaskConfig(task_path="bad.py")], fail_fast=False)
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("bad.py", returncode=1),
+        ):
+            with caplog.at_level(logging.ERROR):
+                pipeline.run()
 
         error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
-        assert any(
-            "bad.py failed with exit code 1" in r.message for r in error_records
+        assert any("bad.py failed with exit code 1" in r.message for r in error_records)
+
+    def test_logs_task_count(self, caplog):
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="a.py"), TaskConfig(task_path="b.py"), TaskConfig(task_path="c.py")]
         )
 
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_logs_task_count(self, mock_settings_cls, mock_run_task, caplog):
-        settings = self._make_settings(task_paths=["a.py", "b.py", "c.py"])
-        mock_settings_cls.return_value = settings
+        def fake_run(task_config, **kwargs):
+            return make_mock_handle(task_config.task_path)
 
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            proc.returncode = 0
-            proc.wait.return_value = 0
-            proc.poll.return_value = 0
-            return proc, MagicMock(), MagicMock()
-
-        mock_run_task.side_effect = fake_run
-
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            main()
+        with patch("uv_task_runner.task.run_task", side_effect=fake_run):
+            with caplog.at_level(logging.INFO):
+                pipeline.run()
 
         assert any("Running 3 task(s)" in r.message for r in caplog.records)
 
+    def test_returns_pipeline_result(self):
+        pipeline = make_pipeline(tasks=[TaskConfig(task_path="a.py")])
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("a.py"),
+        ):
+            result = pipeline.run()
+
+        assert isinstance(result, PipelineResult)
+        assert len(result.task_results) == 1
+        assert result.aborted is False
+        assert result.aborted_by is None
+
 
 # ---------------------------------------------------------------------------
-# main() – sequential mode
+# Pipeline – sequential mode
 # ---------------------------------------------------------------------------
 
 
-class TestMainSequential:
-    """Tests for main() when settings.parallel is False."""
-
-    def _make_settings(self, **overrides):
-        defaults = dict(
+class TestPipelineSequential:
+    def test_all_succeed_sequential(self, caplog):
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="a.py"), TaskConfig(task_path="b.py")],
             parallel=False,
-            fail_fast=True,
-            log_multiline=True,
-            task_paths=["a.py", "b.py"],
-            task_configs={},
         )
-        defaults.update(overrides)
-        return Settings(**defaults)
+        call_order = []
 
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_all_succeed_sequential(self, mock_settings_cls, mock_run_task, caplog):
-        settings = self._make_settings(task_paths=["a.py", "b.py"])
-        mock_settings_cls.return_value = settings
+        def fake_run(task_config, **kwargs):
+            call_order.append(task_config.task_path)
+            return make_mock_handle(task_config.task_path)
 
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            proc.returncode = 0
-            proc.wait.return_value = 0
-            return proc, MagicMock(), MagicMock()
+        with patch("uv_task_runner.task.run_task", side_effect=fake_run):
+            with caplog.at_level(logging.INFO):
+                result = pipeline.run()
 
-        mock_run_task.side_effect = fake_run
-
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            main()
-
-        assert mock_run_task.call_count == 2
-        success_records = [
-            r for r in caplog.records if "completed successfully" in r.message
-        ]
+        assert call_order == ["a.py", "b.py"]
+        assert len(result.task_results) == 2
+        success_records = [r for r in caplog.records if "completed successfully" in r.message]
         assert len(success_records) == 2
 
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_fail_fast_stops_sequential(self, mock_settings_cls, mock_run_task, caplog):
-        settings = self._make_settings(
-            task_paths=["fail.py", "never_run.py"],
+    def test_fail_fast_stops_sequential(self, caplog):
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="fail.py"), TaskConfig(task_path="never_run.py")],
+            parallel=False,
             fail_fast=True,
         )
-        mock_settings_cls.return_value = settings
+        call_count = [0]
 
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            proc.returncode = 1
-            proc.wait.return_value = 1
-            return proc, MagicMock(), MagicMock()
+        def fake_run(task_config, **kwargs):
+            call_count[0] += 1
+            return make_mock_handle(task_config.task_path, returncode=1)
 
-        mock_run_task.side_effect = fake_run
+        with patch("uv_task_runner.task.run_task", side_effect=fake_run):
+            with caplog.at_level(logging.INFO):
+                result = pipeline.run()
 
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            main()
-
-        # Only the first task should run, second should be skipped
-        assert mock_run_task.call_count == 1
+        assert call_count[0] == 1
+        assert result.aborted
+        assert result.aborted_by == "fail.py"
         assert any("Fail fast enabled, exiting" in r.message for r in caplog.records)
 
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_fail_fast_disabled_continues_sequential(
-        self, mock_settings_cls, mock_run_task, caplog
-    ):
-        settings = self._make_settings(
-            task_paths=["fail.py", "ok.py"],
+    def test_fail_fast_disabled_continues_sequential(self):
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="fail.py"), TaskConfig(task_path="ok.py")],
+            parallel=False,
             fail_fast=False,
         )
-        mock_settings_cls.return_value = settings
+        call_count = [0]
 
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            if "fail" in task_path:
-                proc.returncode = 1
-                proc.wait.return_value = 1
-            else:
-                proc.returncode = 0
-                proc.wait.return_value = 0
-            return proc, MagicMock(), MagicMock()
+        def fake_run(task_config, **kwargs):
+            call_count[0] += 1
+            rc = 1 if "fail" in task_config.task_path else 0
+            return make_mock_handle(task_config.task_path, returncode=rc)
 
-        mock_run_task.side_effect = fake_run
+        with patch("uv_task_runner.task.run_task", side_effect=fake_run):
+            pipeline.run()
 
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            main()
+        assert call_count[0] == 2
 
-        assert mock_run_task.call_count == 2
-
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_wait_false_logs_not_waiting(
-        self, mock_settings_cls, mock_run_task, caplog
-    ):
-        """rc=None (from wait=False) is handled first and logs 'not waiting'."""
-        settings = self._make_settings(
-            task_paths=["bg.py"],
-            task_configs={"bg.py": TaskConfig(wait=False)},
+    def test_wait_false_logs_not_waiting(self, caplog):
+        """exit_code=None (wait=False task) logs 'not waiting for it to finish'."""
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="bg.py", wait=False)],
+            parallel=False,
             fail_fast=False,
         )
-        mock_settings_cls.return_value = settings
-
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            proc.returncode = None  # Not waited on
-            return proc, MagicMock(), MagicMock()
-
-        mock_run_task.side_effect = fake_run
-
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            main()
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("bg.py", returncode=None),
+        ):
+            with caplog.at_level(logging.INFO):
+                pipeline.run()
 
         assert any("not waiting for it to finish" in r.message for r in caplog.records)
 
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_per_task_config_used(self, mock_settings_cls, mock_run_task):
-        settings = self._make_settings(
-            task_paths=["x.py"],
-            task_configs={
-                "x.py": TaskConfig(
+    def test_per_task_config_used(self):
+        pipeline = make_pipeline(
+            tasks=[
+                TaskConfig(
+                    task_path="x.py",
                     task_args=["--foo", "bar"],
                     uv_run_args=["--verbose"],
                 )
-            },
+            ],
+            parallel=False,
         )
-        mock_settings_cls.return_value = settings
+        captured_configs = []
 
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            proc.returncode = 0
-            proc.wait.return_value = 0
-            return proc, MagicMock(), MagicMock()
+        def fake_run(task_config, **kwargs):
+            captured_configs.append(task_config)
+            return make_mock_handle(task_config.task_path)
 
-        mock_run_task.side_effect = fake_run
-        main()
+        with patch("uv_task_runner.task.run_task", side_effect=fake_run):
+            pipeline.run()
 
-        mock_run_task.assert_called_once()
-        _, kwargs = mock_run_task.call_args
-        assert kwargs["task_args"] == ["--foo", "bar"]
-        assert kwargs["uv_run_args"] == ["--verbose"]
+        assert len(captured_configs) == 1
+        assert captured_configs[0].task_args == ["--foo", "bar"]
+        assert captured_configs[0].uv_run_args == ["--verbose"]
 
 
 # ---------------------------------------------------------------------------
-# main() – return code handling
+# Pipeline – return code handling
 # ---------------------------------------------------------------------------
 
 
-class TestMainReturnCodes:
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_none_return_code_treated_as_failure_parallel(
-        self, mock_settings_cls, mock_run_task, caplog
-    ):
-        """rc=None (wait=False) logs 'not waiting for it to finish' in both modes."""
-        settings = Settings(
+class TestReturnCodes:
+    def test_none_return_code_not_waiting_parallel(self, caplog):
+        """exit_code=None (wait=False) logs 'not waiting for it to finish'."""
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="nowait.py", wait=False)],
             parallel=True,
             fail_fast=False,
-            task_paths=["nowait.py"],
-            task_configs={"nowait.py": TaskConfig(wait=False)},
         )
-        mock_settings_cls.return_value = settings
-
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            proc.returncode = None
-            return proc, MagicMock(), MagicMock()
-
-        mock_run_task.side_effect = fake_run
-
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            main()
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("nowait.py", returncode=None),
+        ):
+            with caplog.at_level(logging.INFO):
+                pipeline.run()
 
         assert any("not waiting for it to finish" in r.message for r in caplog.records)
 
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_none_return_code_sequential_logs_not_waiting(
-        self, mock_settings_cls, mock_run_task, caplog
-    ):
-        """In sequential mode, rc=None is handled first and logs 'not waiting'."""
-        settings = Settings(
+    def test_none_return_code_sequential(self, caplog):
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="bg.py", wait=False)],
             parallel=False,
             fail_fast=True,
-            task_paths=["bg.py"],
-            task_configs={"bg.py": TaskConfig(wait=False)},
         )
-        mock_settings_cls.return_value = settings
-
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            proc.returncode = None
-            return proc, MagicMock(), MagicMock()
-
-        mock_run_task.side_effect = fake_run
-
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            main()
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("bg.py", returncode=None),
+        ):
+            with caplog.at_level(logging.INFO):
+                pipeline.run()
 
         assert any("not waiting for it to finish" in r.message for r in caplog.records)
 
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_nonzero_return_code(self, mock_settings_cls, mock_run_task, caplog):
-        settings = Settings(
+    def test_nonzero_return_code(self, caplog):
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="err.py")],
             parallel=False,
             fail_fast=False,
-            task_paths=["err.py"],
-            task_configs={},
         )
-        mock_settings_cls.return_value = settings
-
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            proc.returncode = 2
-            proc.wait.return_value = 2
-            return proc, MagicMock(), MagicMock()
-
-        mock_run_task.side_effect = fake_run
-
-        with caplog.at_level(logging.ERROR, logger="uv_task_runner.__main__"):
-            main()
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("err.py", returncode=2),
+        ):
+            with caplog.at_level(logging.ERROR):
+                pipeline.run()
 
         assert any("failed with exit code 2" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
-# main() – logging levels
+# Pipeline – logging levels
 # ---------------------------------------------------------------------------
 
 
-class TestMainLoggingLevels:
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_success_logged_at_info(self, mock_settings_cls, mock_run_task, caplog):
-        settings = Settings(
-            parallel=False, fail_fast=False, task_paths=["ok.py"], task_configs={}
+class TestLoggingLevels:
+    def test_success_logged_at_info(self, caplog):
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="ok.py")], parallel=False, fail_fast=False
         )
-        mock_settings_cls.return_value = settings
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("ok.py"),
+        ):
+            with caplog.at_level(logging.DEBUG):
+                pipeline.run()
 
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            proc.returncode = 0
-            proc.wait.return_value = 0
-            return proc, MagicMock(), MagicMock()
-
-        mock_run_task.side_effect = fake_run
-
-        with caplog.at_level(logging.DEBUG, logger="uv_task_runner.__main__"):
-            main()
-
-        success_records = [
-            r for r in caplog.records if "completed successfully" in r.message
-        ]
+        success_records = [r for r in caplog.records if "completed successfully" in r.message]
         assert all(r.levelno == logging.INFO for r in success_records)
 
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_failure_logged_at_error(self, mock_settings_cls, mock_run_task, caplog):
-        settings = Settings(
-            parallel=False, fail_fast=False, task_paths=["bad.py"], task_configs={}
+    def test_failure_logged_at_error(self, caplog):
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="bad.py")], parallel=False, fail_fast=False
         )
-        mock_settings_cls.return_value = settings
-
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            proc.returncode = 1
-            proc.wait.return_value = 1
-            return proc, MagicMock(), MagicMock()
-
-        mock_run_task.side_effect = fake_run
-
-        with caplog.at_level(logging.DEBUG, logger="uv_task_runner.__main__"):
-            main()
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("bad.py", returncode=1),
+        ):
+            with caplog.at_level(logging.DEBUG):
+                pipeline.run()
 
         error_records = [r for r in caplog.records if "failed" in r.message]
         assert all(r.levelno == logging.ERROR for r in error_records)
 
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_fail_fast_warning_logged_at_warning(
-        self, mock_settings_cls, mock_run_task, caplog
-    ):
-        settings = Settings(
-            parallel=False, fail_fast=True, task_paths=["bad.py"], task_configs={}
+    def test_fail_fast_warning_logged_at_warning(self, caplog):
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="bad.py")], parallel=False, fail_fast=True
         )
-        mock_settings_cls.return_value = settings
-
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            proc.returncode = 1
-            proc.wait.return_value = 1
-            return proc, MagicMock(), MagicMock()
-
-        mock_run_task.side_effect = fake_run
-
-        with caplog.at_level(logging.DEBUG, logger="uv_task_runner.__main__"):
-            main()
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("bad.py", returncode=1),
+        ):
+            with caplog.at_level(logging.DEBUG):
+                pipeline.run()
 
         warning_records = [r for r in caplog.records if "Fail fast" in r.message]
         assert len(warning_records) >= 1
         assert all(r.levelno == logging.WARNING for r in warning_records)
 
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_task_count_logged_at_info(self, mock_settings_cls, mock_run_task, caplog):
-        settings = Settings(
-            parallel=False, fail_fast=False, task_paths=["a.py"], task_configs={}
+    def test_task_count_logged_at_info(self, caplog):
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="a.py")], parallel=False, fail_fast=False
         )
-        mock_settings_cls.return_value = settings
-
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            proc.returncode = 0
-            proc.wait.return_value = 0
-            return proc, MagicMock(), MagicMock()
-
-        mock_run_task.side_effect = fake_run
-
-        with caplog.at_level(logging.DEBUG, logger="uv_task_runner.__main__"):
-            main()
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("a.py"),
+        ):
+            with caplog.at_level(logging.DEBUG):
+                pipeline.run()
 
         count_records = [r for r in caplog.records if "Running 1 task(s)" in r.message]
         assert len(count_records) == 1
@@ -995,96 +1059,64 @@ class TestMainLoggingLevels:
 
 
 # ---------------------------------------------------------------------------
-# main() – parallel termination details
+# Pipeline – parallel termination details
 # ---------------------------------------------------------------------------
 
 
 class TestParallelTermination:
-    @patch("uv_task_runner.__main__._terminate_tree")
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_only_running_processes_terminated(
-        self, mock_settings_cls, mock_run_task, mock_term, caplog
-    ):
+    @patch("uv_task_runner.task._terminate_tree")
+    def test_only_running_processes_terminated(self, mock_term, caplog):
         """Only processes still running (poll() is None) should be terminated."""
-        settings = Settings(
+        pipeline = make_pipeline(
+            tasks=[
+                TaskConfig(task_path="fail.py"),
+                TaskConfig(task_path="done.py"),
+                TaskConfig(task_path="running.py"),
+            ],
             parallel=True,
             fail_fast=True,
-            task_paths=["fail.py", "done.py", "running.py"],
-            task_configs={},
         )
-        mock_settings_cls.return_value = settings
 
-        procs = {}
-
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = hash(task_path) % 10000
-            if "fail" in task_path:
-                proc.returncode = 1
-                proc.wait.return_value = 1
-                proc.poll.return_value = 1
-            elif "done" in task_path:
-                proc.returncode = 0
-                proc.wait.return_value = 0
-                proc.poll.return_value = 0  # already finished
+        def fake_run(task_config, **kwargs):
+            tp = task_config.task_path
+            if "fail" in tp:
+                return make_mock_handle(tp, returncode=1)
+            elif "done" in tp:
+                return make_mock_handle(tp, returncode=0)
             else:
-                proc.returncode = 0
-                proc.wait.return_value = 0
-                proc.poll.return_value = None  # still running
-            procs[task_path] = proc
-            return proc, MagicMock(), MagicMock()
+                return make_mock_handle(tp, still_running=True)
 
-        mock_run_task.side_effect = fake_run
+        with patch("uv_task_runner.task.run_task", side_effect=fake_run):
+            with caplog.at_level(logging.INFO):
+                pipeline.run()
 
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            main()
-
-        # _terminate_tree should have been called for the still-running process
+        # done.py was already finished — should not be terminated
         terminated_pids = [c.args[0].pid for c in mock_term.call_args_list]
-        if "running.py" in procs:
-            running_pid = procs["running.py"].pid
-            # If running.py was registered before fail_fast triggered,
-            # it should have been terminated
-            if running_pid in terminated_pids:
-                assert True
-        # done.py should NOT have been terminated (already finished)
-        if "done.py" in procs:
-            done_pid = procs["done.py"].pid
-            assert done_pid not in terminated_pids
+        # We can't guarantee running.py's handle was registered before abort,
+        # but done.py's process should not be in terminated list
+        done_handle = make_mock_handle("done.py", returncode=0)
+        done_pid = done_handle.process.pid
+        assert done_pid not in terminated_pids
 
-    @patch("uv_task_runner.__main__._terminate_tree")
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_termination_logged_with_pid(
-        self, mock_settings_cls, mock_run_task, mock_term, caplog
-    ):
-        settings = Settings(
+    @patch("uv_task_runner.task._terminate_tree")
+    def test_termination_logged_with_pid(self, mock_term, caplog):
+        def fake_run(task_config, **kwargs):
+            tp = task_config.task_path
+            if "fail" in tp:
+                return make_mock_handle(tp, returncode=1)
+            else:
+                h = make_mock_handle(tp, still_running=True)
+                h.process.pid = 200
+                return h
+
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="fail.py"), TaskConfig(task_path="running.py")],
             parallel=True,
             fail_fast=True,
-            task_paths=["fail.py", "running.py"],
-            task_configs={},
         )
-        mock_settings_cls.return_value = settings
-
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            if "fail" in task_path:
-                proc.pid = 100
-                proc.returncode = 1
-                proc.wait.return_value = 1
-                proc.poll.return_value = 1
-            else:
-                proc.pid = 200
-                proc.returncode = 0
-                proc.wait.return_value = 0
-                proc.poll.return_value = None
-            return proc, MagicMock(), MagicMock()
-
-        mock_run_task.side_effect = fake_run
-
-        with caplog.at_level(logging.WARNING, logger="uv_task_runner.__main__"):
-            main()
+        with patch("uv_task_runner.task.run_task", side_effect=fake_run):
+            with caplog.at_level(logging.WARNING):
+                pipeline.run()
 
         termination_records = [r for r in caplog.records if "Terminating" in r.message]
         if termination_records:
@@ -1092,90 +1124,286 @@ class TestParallelTermination:
 
 
 # ---------------------------------------------------------------------------
-# main() – no tasks
+# Pipeline – edge cases
 # ---------------------------------------------------------------------------
 
 
-class TestMainEdgeCases:
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_no_tasks_parallel(self, mock_settings_cls, mock_run_task, caplog):
-        settings = Settings(parallel=True, fail_fast=True, task_paths=[], task_configs={})
-        mock_settings_cls.return_value = settings
-
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            main()
+class TestPipelineEdgeCases:
+    def test_no_tasks_parallel(self, caplog):
+        pipeline = make_pipeline(tasks=[], parallel=True)
+        with caplog.at_level(logging.INFO):
+            result = pipeline.run()
 
         assert any("Running 0 task(s)" in r.message for r in caplog.records)
-        mock_run_task.assert_not_called()
+        assert result.task_results == ()
 
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_no_tasks_sequential(self, mock_settings_cls, mock_run_task, caplog):
-        settings = Settings(parallel=False, fail_fast=True, task_paths=[], task_configs={})
-        mock_settings_cls.return_value = settings
-
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            main()
+    def test_no_tasks_sequential(self, caplog):
+        pipeline = make_pipeline(tasks=[], parallel=False)
+        with caplog.at_level(logging.INFO):
+            result = pipeline.run()
 
         assert any("Running 0 task(s)" in r.message for r in caplog.records)
-        mock_run_task.assert_not_called()
+        assert result.task_results == ()
 
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_single_task_success(self, mock_settings_cls, mock_run_task, caplog):
-        settings = Settings(
-            parallel=True, fail_fast=True, task_paths=["only.py"], task_configs={}
+    def test_single_task_success(self, caplog):
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="only.py")], parallel=True, fail_fast=True
         )
-        mock_settings_cls.return_value = settings
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("only.py"),
+        ):
+            with caplog.at_level(logging.INFO):
+                pipeline.run()
 
-        def fake_run(task_path, **kwargs):
-            proc = MagicMock()
-            proc.pid = 1
-            proc.returncode = 0
-            proc.wait.return_value = 0
-            proc.poll.return_value = 0
-            return proc, MagicMock(), MagicMock()
-
-        mock_run_task.side_effect = fake_run
-
-        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
-            main()
-
-        assert any(
-            "only.py completed successfully" in r.message for r in caplog.records
-        )
+        assert any("only.py completed successfully" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
-# main() – log_multiline forwarding
+# Pipeline – log_multiline forwarding
 # ---------------------------------------------------------------------------
 
 
 class TestLogMultilineForwarding:
-    @patch("uv_task_runner.__main__.run_task")
-    @patch("uv_task_runner.__main__.Settings")
-    def test_log_multiline_passed_to_run_task(self, mock_settings_cls, mock_run_task):
-        for multiline_val in (True, False):
-            mock_run_task.reset_mock()
-            settings = Settings(
-                parallel=False,
-                fail_fast=False,
-                log_multiline=multiline_val,
-                task_paths=["x.py"],
-                task_configs={},
+    @pytest.mark.parametrize("multiline_val", [True, False])
+    def test_log_multiline_passed_to_run_task(self, multiline_val):
+        pipeline = make_pipeline(
+            tasks=[TaskConfig(task_path="x.py")],
+            parallel=False,
+            log_multiline=multiline_val,
+        )
+        captured_kwargs = []
+
+        def fake_run(task_config, **kwargs):
+            captured_kwargs.append(kwargs)
+            return make_mock_handle(task_config.task_path)
+
+        with patch("uv_task_runner.task.run_task", side_effect=fake_run):
+            pipeline.run()
+
+        assert len(captured_kwargs) == 1
+        assert captured_kwargs[0]["log_multiline"] == multiline_val
+
+
+# ---------------------------------------------------------------------------
+# Callbacks
+# ---------------------------------------------------------------------------
+
+
+class TestCallbacks:
+    def test_on_task_start_called(self):
+        starts = []
+        cfg = TaskConfig(
+            task_path="a.py",
+            on_task_start=lambda path, pid: starts.append((path, pid)),
+        )
+        pipeline = Pipeline(tasks=[cfg], parallel=False)
+
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("a.py"),
+        ):
+            pipeline.run()
+
+        # on_task_start is fired inside run_task (in task.py), which we mocked.
+        # So we test via the actual run_task integration.
+
+    def test_on_task_end_called(self):
+        ends = []
+        cfg = TaskConfig(
+            task_path="a.py",
+            on_task_end=lambda path, result: ends.append((path, result)),
+        )
+        pipeline = Pipeline(tasks=[cfg], parallel=False)
+
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("a.py"),
+        ):
+            pipeline.run()
+
+        assert len(ends) == 1
+        assert ends[0][0] == "a.py"
+        assert isinstance(ends[0][1], TaskResult)
+
+    def test_on_task_end_called_for_each_task(self):
+        ends = []
+        tasks = [
+            TaskConfig(
+                task_path=f"{ch}.py",
+                on_task_end=lambda path, result, ch=ch: ends.append(ch),
             )
-            mock_settings_cls.return_value = settings
+            for ch in "abc"
+        ]
+        pipeline = Pipeline(tasks=tasks, parallel=False)
 
-            def fake_run(task_path, **kwargs):
-                proc = MagicMock()
-                proc.pid = 1
-                proc.returncode = 0
-                proc.wait.return_value = 0
-                return proc, MagicMock(), MagicMock()
+        def fake_run(task_config, **kwargs):
+            return make_mock_handle(task_config.task_path)
 
-            mock_run_task.side_effect = fake_run
+        with patch("uv_task_runner.task.run_task", side_effect=fake_run):
+            pipeline.run()
+
+        assert len(ends) == 3
+
+    def test_on_pipeline_start_called(self):
+        calls = []
+        pipeline = Pipeline(
+            tasks=[TaskConfig(task_path="a.py")],
+            parallel=False,
+            on_pipeline_start=lambda: calls.append("start"),
+        )
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("a.py"),
+        ):
+            pipeline.run()
+
+        assert calls == ["start"]
+
+    def test_on_pipeline_end_called_with_result(self):
+        results = []
+        pipeline = Pipeline(
+            tasks=[TaskConfig(task_path="a.py")],
+            parallel=False,
+            on_pipeline_end=lambda r: results.append(r),
+        )
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("a.py"),
+        ):
+            pipeline.run()
+
+        assert len(results) == 1
+        assert isinstance(results[0], PipelineResult)
+
+    def test_on_pipeline_start_list(self):
+        calls = []
+        pipeline = Pipeline(
+            tasks=[TaskConfig(task_path="a.py")],
+            parallel=False,
+            on_pipeline_start=[
+                lambda: calls.append("first"),
+                lambda: calls.append("second"),
+            ],
+        )
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("a.py"),
+        ):
+            pipeline.run()
+
+        assert calls == ["first", "second"]
+
+    def test_on_task_end_list(self):
+        calls = []
+        cfg = TaskConfig(
+            task_path="a.py",
+            on_task_end=[
+                lambda path, result: calls.append(f"hook1:{path}"),
+                lambda path, result: calls.append(f"hook2:{path}"),
+            ],
+        )
+        pipeline = Pipeline(tasks=[cfg], parallel=False)
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("a.py"),
+        ):
+            pipeline.run()
+
+        assert "hook1:a.py" in calls
+        assert "hook2:a.py" in calls
+
+
+# ---------------------------------------------------------------------------
+# run_tasks convenience function
+# ---------------------------------------------------------------------------
+
+
+class TestRunTasksFunction:
+    def test_basic_usage(self):
+        tasks = [TaskConfig(task_path="a.py")]
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("a.py"),
+        ):
+            result = run_tasks(tasks)
+
+        assert isinstance(result, PipelineResult)
+        assert len(result.task_results) == 1
+
+    def test_forwards_parallel_flag(self):
+        def fake_run(task_config, **kwargs):
+            return make_mock_handle(task_config.task_path)
+
+        tasks = [TaskConfig(task_path="a.py"), TaskConfig(task_path="b.py")]
+        with patch("uv_task_runner.task.run_task", side_effect=fake_run) as mock_rt:
+            run_tasks(tasks, parallel=False, fail_fast=False)
+
+        assert mock_rt.call_count == 2
+
+    def test_pipeline_end_hook(self):
+        results = []
+        tasks = [TaskConfig(task_path="a.py")]
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("a.py"),
+        ):
+            run_tasks(tasks, on_pipeline_end=lambda r: results.append(r))
+
+        assert len(results) == 1
+
+
+# ---------------------------------------------------------------------------
+# Pipeline.from_settings
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineFromSettings:
+    def test_creates_pipeline_from_settings(self):
+        settings = Settings(
+            tasks=[TaskConfig(task_path="a.py"), TaskConfig(task_path="b.py")],
+            parallel=False,
+            fail_fast=False,
+            log_multiline=False,
+        )
+        pipeline = Pipeline.from_settings(settings)
+        assert pipeline.tasks == settings.tasks
+        assert pipeline.parallel is False
+        assert pipeline.fail_fast is False
+        assert pipeline.log_multiline is False
+
+
+# ---------------------------------------------------------------------------
+# main() wrapper
+# ---------------------------------------------------------------------------
+
+
+class TestMainWrapper:
+    @patch("uv_task_runner.task.run_task")
+    def test_main_runs_pipeline(self, mock_run_task, tmp_path, monkeypatch):
+        """main() loads _CliSettings and runs a Pipeline."""
+        toml = tmp_path / "task_runner.toml"
+        toml.write_text(
+            "parallel = false\nfail_fast = false\n\n"
+            "[[tasks]]\ntask_path = 'a.py'\n"
+        )
+        monkeypatch.setattr(sys, "argv", ["__main__.py", "--config", str(toml)])
+        mock_run_task.return_value = make_mock_handle("a.py")
+
+        main()
+
+        mock_run_task.assert_called_once()
+        cfg = mock_run_task.call_args.args[0]
+        assert cfg.task_path == "a.py"
+
+    @patch("uv_task_runner.task.run_task")
+    def test_main_no_tasks(self, mock_run_task, tmp_path, monkeypatch, caplog):
+        toml = tmp_path / "task_runner.toml"
+        toml.write_text("parallel = false\nfail_fast = false\n")
+        monkeypatch.setattr(sys, "argv", ["__main__.py", "--config", str(toml)])
+
+        with caplog.at_level(logging.INFO):
             main()
 
-            _, kwargs = mock_run_task.call_args
-            assert kwargs["log_multiline"] == multiline_val
+        mock_run_task.assert_not_called()
+        assert any("Running 0 task(s)" in r.message for r in caplog.records)
