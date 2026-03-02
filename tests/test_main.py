@@ -4,9 +4,12 @@ import io
 import logging
 import signal
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from uv_task_runner import hello
 from uv_task_runner.__main__ import (
@@ -17,6 +20,13 @@ from uv_task_runner.__main__ import (
     main,
     run_task,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_cli_argv(monkeypatch):
+    """Prevent CliSettingsSource from reading pytest's sys.argv."""
+    monkeypatch.setattr(sys, "argv", ["__main__.py"])
+
 
 # ---------------------------------------------------------------------------
 # hello()
@@ -88,7 +98,7 @@ class TestSettings:
             "fail_fast = false\n"
             "log_multiline = false\n"
             "\n"
-            '[tasks."a.py"]\n'
+            '[task_configs."a.py"]\n'
             "wait = false\n"
             'task_args = ["--x"]\n'
         )
@@ -207,10 +217,9 @@ class TestPipeToLog:
 
 
 class TestTerminateTree:
-    @patch("uv_task_runner.__main__.sys")
     @patch("uv_task_runner.__main__.subprocess.run")
-    def test_windows_uses_taskkill(self, mock_run, mock_sys):
-        mock_sys.platform = "win32"
+    @patch("uv_task_runner.__main__.platform.system", return_value="Windows")
+    def test_windows_uses_taskkill(self, mock_platform_system, mock_run):
         proc = MagicMock()
         proc.pid = 9999
         _terminate_tree(proc)
@@ -218,26 +227,24 @@ class TestTerminateTree:
             ["taskkill", "/F", "/T", "/PID", "9999"], capture_output=True
         )
 
-    @patch("uv_task_runner.__main__.sys")
+    @patch("uv_task_runner.__main__.platform.system", return_value="Linux")
     @patch("uv_task_runner.__main__.os.killpg", create=True)
     @patch("uv_task_runner.__main__.os.getpgid", return_value=42, create=True)
-    def test_unix_uses_killpg(self, mock_getpgid, mock_killpg, mock_sys):
-        mock_sys.platform = "linux"
+    def test_unix_uses_killpg(self, mock_getpgid, mock_killpg, mock_platform_system):
         proc = MagicMock()
         proc.pid = 1234
         _terminate_tree(proc)
         mock_getpgid.assert_called_once_with(1234)
         mock_killpg.assert_called_once_with(42, signal.SIGTERM)
 
-    @patch("uv_task_runner.__main__.sys")
+    @patch("uv_task_runner.__main__.platform.system", return_value="Linux")
     @patch("uv_task_runner.__main__.os.killpg", create=True)
     @patch(
         "uv_task_runner.__main__.os.getpgid",
         side_effect=ProcessLookupError,
         create=True,
     )
-    def test_unix_handles_already_terminated(self, mock_getpgid, mock_killpg, mock_sys):
-        mock_sys.platform = "linux"
+    def test_unix_handles_already_terminated(self, mock_getpgid, mock_killpg, mock_platform_system):
         proc = MagicMock()
         proc.pid = 1234
         # Should not raise
@@ -262,7 +269,7 @@ class TestRuntask:
         run_task("tasks/test.py", task_args=["--a", "1"], uv_run_args=["--quiet"])
 
         args = mock_popen.call_args[0][0]
-        assert args == ["uv", "run", "--quiet", "--script", "tasks/test.py", "--a", "1"]
+        assert args == ["uv", "run", "--quiet", "tasks/test.py", "--a", "1"]
 
     @patch("uv_task_runner.__main__.subprocess.Popen")
     def test_default_args_are_empty(self, mock_popen):
@@ -275,7 +282,7 @@ class TestRuntask:
         run_task("script.py")
 
         args = mock_popen.call_args[0][0]
-        assert args == ["uv", "run", "--script", "script.py"]
+        assert args == ["uv", "run", "script.py"]
 
     @patch("uv_task_runner.__main__.subprocess.Popen")
     def test_returns_process_and_threads(self, mock_popen):
@@ -319,10 +326,9 @@ class TestRuntask:
         assert kwargs["stderr"] == subprocess.PIPE
         assert kwargs["text"] is True
 
-    @patch("uv_task_runner.__main__.sys")
+    @patch("uv_task_runner.__main__.platform.system", return_value="Linux")
     @patch("uv_task_runner.__main__.subprocess.Popen")
-    def test_unix_sets_new_session(self, mock_popen, mock_sys):
-        mock_sys.platform = "linux"
+    def test_unix_sets_new_session(self, mock_popen, mock_platform_system):
         mock_proc = MagicMock()
         mock_proc.pid = 100
         mock_proc.stdout = io.StringIO("")
@@ -385,8 +391,8 @@ class TestLoggingOutput:
         with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
             run_task("tasks/test.py", task_args=["--a"])
 
-        assert any("Running tasks/test.py" in r.message for r in caplog.records)
-        assert any("task_args=['--a']" in r.message for r in caplog.records)
+        assert any("Running command:" in r.message for r in caplog.records)
+        assert any("tasks/test.py" in r.message and "--a" in r.message for r in caplog.records)
 
     @patch("uv_task_runner.__main__.subprocess.Popen")
     def test_stdout_piped_to_info_log(self, mock_popen, caplog):
@@ -491,7 +497,7 @@ class TestMainParallel:
             fail_fast=True,
             log_multiline=True,
             task_paths=["a.py", "b.py"],
-            tasks={},
+            task_configs={},
         )
         defaults.update(overrides)
         return Settings(**defaults)
@@ -559,7 +565,7 @@ class TestMainParallel:
         with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
             main()
 
-        assert any("failed with return code" in r.message for r in caplog.records)
+        assert any("failed with exit code" in r.message for r in caplog.records)
         assert any("Fail fast enabled" in r.message for r in caplog.records)
 
     @patch("uv_task_runner.__main__.run_task")
@@ -619,7 +625,7 @@ class TestMainParallel:
 
         error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
         assert any(
-            "bad.py failed with return code 1" in r.message for r in error_records
+            "bad.py failed with exit code 1" in r.message for r in error_records
         )
 
     @patch("uv_task_runner.__main__.run_task")
@@ -658,7 +664,7 @@ class TestMainSequential:
             fail_fast=True,
             log_multiline=True,
             task_paths=["a.py", "b.py"],
-            tasks={},
+            task_configs={},
         )
         defaults.update(overrides)
         return Settings(**defaults)
@@ -749,7 +755,7 @@ class TestMainSequential:
         """rc=None (from wait=False) is handled first and logs 'not waiting'."""
         settings = self._make_settings(
             task_paths=["bg.py"],
-            tasks={"bg.py": TaskConfig(wait=False)},
+            task_configs={"bg.py": TaskConfig(wait=False)},
             fail_fast=False,
         )
         mock_settings_cls.return_value = settings
@@ -772,7 +778,7 @@ class TestMainSequential:
     def test_per_task_config_used(self, mock_settings_cls, mock_run_task):
         settings = self._make_settings(
             task_paths=["x.py"],
-            tasks={
+            task_configs={
                 "x.py": TaskConfig(
                     task_args=["--foo", "bar"],
                     uv_run_args=["--verbose"],
@@ -808,12 +814,12 @@ class TestMainReturnCodes:
     def test_none_return_code_treated_as_failure_parallel(
         self, mock_settings_cls, mock_run_task, caplog
     ):
-        """rc=None (wait=False) is != 0, so treated as failure in parallel mode."""
+        """rc=None (wait=False) logs 'not waiting for it to finish' in both modes."""
         settings = Settings(
             parallel=True,
             fail_fast=False,
             task_paths=["nowait.py"],
-            tasks={"nowait.py": TaskConfig(wait=False)},
+            task_configs={"nowait.py": TaskConfig(wait=False)},
         )
         mock_settings_cls.return_value = settings
 
@@ -825,11 +831,10 @@ class TestMainReturnCodes:
 
         mock_run_task.side_effect = fake_run
 
-        with caplog.at_level(logging.ERROR, logger="uv_task_runner.__main__"):
+        with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
             main()
 
-        # In parallel mode, rc != 0 (None != 0) triggers the error path
-        assert any("failed with return code None" in r.message for r in caplog.records)
+        assert any("not waiting for it to finish" in r.message for r in caplog.records)
 
     @patch("uv_task_runner.__main__.run_task")
     @patch("uv_task_runner.__main__.Settings")
@@ -841,7 +846,7 @@ class TestMainReturnCodes:
             parallel=False,
             fail_fast=True,
             task_paths=["bg.py"],
-            tasks={"bg.py": TaskConfig(wait=False)},
+            task_configs={"bg.py": TaskConfig(wait=False)},
         )
         mock_settings_cls.return_value = settings
 
@@ -865,7 +870,7 @@ class TestMainReturnCodes:
             parallel=False,
             fail_fast=False,
             task_paths=["err.py"],
-            tasks={},
+            task_configs={},
         )
         mock_settings_cls.return_value = settings
 
@@ -881,7 +886,7 @@ class TestMainReturnCodes:
         with caplog.at_level(logging.ERROR, logger="uv_task_runner.__main__"):
             main()
 
-        assert any("failed with return code 2" in r.message for r in caplog.records)
+        assert any("failed with exit code 2" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -894,7 +899,7 @@ class TestMainLoggingLevels:
     @patch("uv_task_runner.__main__.Settings")
     def test_success_logged_at_info(self, mock_settings_cls, mock_run_task, caplog):
         settings = Settings(
-            parallel=False, fail_fast=False, task_paths=["ok.py"], tasks={}
+            parallel=False, fail_fast=False, task_paths=["ok.py"], task_configs={}
         )
         mock_settings_cls.return_value = settings
 
@@ -919,7 +924,7 @@ class TestMainLoggingLevels:
     @patch("uv_task_runner.__main__.Settings")
     def test_failure_logged_at_error(self, mock_settings_cls, mock_run_task, caplog):
         settings = Settings(
-            parallel=False, fail_fast=False, task_paths=["bad.py"], tasks={}
+            parallel=False, fail_fast=False, task_paths=["bad.py"], task_configs={}
         )
         mock_settings_cls.return_value = settings
 
@@ -944,7 +949,7 @@ class TestMainLoggingLevels:
         self, mock_settings_cls, mock_run_task, caplog
     ):
         settings = Settings(
-            parallel=False, fail_fast=True, task_paths=["bad.py"], tasks={}
+            parallel=False, fail_fast=True, task_paths=["bad.py"], task_configs={}
         )
         mock_settings_cls.return_value = settings
 
@@ -968,7 +973,7 @@ class TestMainLoggingLevels:
     @patch("uv_task_runner.__main__.Settings")
     def test_task_count_logged_at_info(self, mock_settings_cls, mock_run_task, caplog):
         settings = Settings(
-            parallel=False, fail_fast=False, task_paths=["a.py"], tasks={}
+            parallel=False, fail_fast=False, task_paths=["a.py"], task_configs={}
         )
         mock_settings_cls.return_value = settings
 
@@ -1006,7 +1011,7 @@ class TestParallelTermination:
             parallel=True,
             fail_fast=True,
             task_paths=["fail.py", "done.py", "running.py"],
-            tasks={},
+            task_configs={},
         )
         mock_settings_cls.return_value = settings
 
@@ -1058,7 +1063,7 @@ class TestParallelTermination:
             parallel=True,
             fail_fast=True,
             task_paths=["fail.py", "running.py"],
-            tasks={},
+            task_configs={},
         )
         mock_settings_cls.return_value = settings
 
@@ -1095,7 +1100,7 @@ class TestMainEdgeCases:
     @patch("uv_task_runner.__main__.run_task")
     @patch("uv_task_runner.__main__.Settings")
     def test_no_tasks_parallel(self, mock_settings_cls, mock_run_task, caplog):
-        settings = Settings(parallel=True, fail_fast=True, task_paths=[], tasks={})
+        settings = Settings(parallel=True, fail_fast=True, task_paths=[], task_configs={})
         mock_settings_cls.return_value = settings
 
         with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
@@ -1107,7 +1112,7 @@ class TestMainEdgeCases:
     @patch("uv_task_runner.__main__.run_task")
     @patch("uv_task_runner.__main__.Settings")
     def test_no_tasks_sequential(self, mock_settings_cls, mock_run_task, caplog):
-        settings = Settings(parallel=False, fail_fast=True, task_paths=[], tasks={})
+        settings = Settings(parallel=False, fail_fast=True, task_paths=[], task_configs={})
         mock_settings_cls.return_value = settings
 
         with caplog.at_level(logging.INFO, logger="uv_task_runner.__main__"):
@@ -1120,7 +1125,7 @@ class TestMainEdgeCases:
     @patch("uv_task_runner.__main__.Settings")
     def test_single_task_success(self, mock_settings_cls, mock_run_task, caplog):
         settings = Settings(
-            parallel=True, fail_fast=True, task_paths=["only.py"], tasks={}
+            parallel=True, fail_fast=True, task_paths=["only.py"], task_configs={}
         )
         mock_settings_cls.return_value = settings
 
@@ -1158,7 +1163,7 @@ class TestLogMultilineForwarding:
                 fail_fast=False,
                 log_multiline=multiline_val,
                 task_paths=["x.py"],
-                tasks={},
+                task_configs={},
             )
             mock_settings_cls.return_value = settings
 
