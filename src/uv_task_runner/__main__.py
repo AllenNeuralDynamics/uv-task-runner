@@ -4,6 +4,8 @@
 #     "pydantic-settings>=2.13.1",
 # ]
 # ///
+from __future__ import annotations
+
 import logging
 
 from pydantic_settings import (

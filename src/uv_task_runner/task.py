@@ -41,7 +41,7 @@ class TaskConfig(BaseModel):
     on_task_end: OnTaskEnd | list[OnTaskEnd] | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TaskResult:
     task_path: str
     exit_code: int | None  # None if wait=False

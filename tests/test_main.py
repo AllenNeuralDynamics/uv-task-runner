@@ -1,4 +1,5 @@
 """Comprehensive tests for uv-task-runner."""
+from __future__ import annotations
 
 import io
 import logging

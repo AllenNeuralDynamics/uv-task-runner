@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures as cf
 import logging
+import sys
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -10,7 +11,7 @@ from uv_task_runner import settings, task, utils
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PipelineResult:
     task_results: tuple[task.TaskResult, ...]
     aborted: bool
@@ -104,7 +105,11 @@ class Pipeline:
                                     f"Terminating {tp} with PID {handle.process.pid}"
                                 )
                                 task._terminate_tree(handle.process)
-                        executor.shutdown(wait=False, cancel_futures=True)
+                        if sys.version_info >= (3, 9):
+                            executor.shutdown(wait=False, cancel_futures=True)
+                        else:
+                            logger.warning("Python <3.9: pending futures cannot be cancelled.")
+                            executor.shutdown(wait=False)
                         break
         else:
             for task_config in self.tasks:
