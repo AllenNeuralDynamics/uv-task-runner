@@ -18,6 +18,6 @@ fail_fast = true
 [tasks."scripts/script_a.py"]
 wait = true # wait for task to finish before continuing (default: true)
 task_args = ["--param1", "updated_value"] # args passed to the task script
-uv_args = [
+uv_run_args = [
     "--quiet",
 ] # args passed to `uv run`; replaces global uv args when set
