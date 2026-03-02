@@ -55,8 +55,6 @@ class Settings(BaseSettings):
         return (
             init_settings,
             CliSettingsSource(settings_cls, cli_parse_args=True, cli_kebab_case=True),
-            dotenv_settings,
-            env_settings,
             TomlConfigSettingsSource(settings_cls, "task_runner.toml"),
         )
 
