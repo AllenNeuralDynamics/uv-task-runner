@@ -91,9 +91,7 @@ def _pipe_to_log(
 def _terminate_tree(proc: subprocess.Popen) -> None:
     """Terminate a process and all its children."""
     if sys.platform.startswith("win"):
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True
-        )
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
     else:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -141,7 +139,12 @@ def run_task(
     kwargs = dict(popen_kwargs or {})
     if sys.platform.startswith("win"):
         kwargs.setdefault("start_new_session", True)
-    logger.debug("uv_run_args=%r task_args=%r popen_kwargs=%r", task_config.uv_run_args, task_config.task_args, kwargs)
+    logger.debug(
+        "uv_run_args=%r task_args=%r popen_kwargs=%r",
+        task_config.uv_run_args,
+        task_config.task_args,
+        kwargs,
+    )
     logger.info("Running command: %s", " ".join(args))
     process = subprocess.Popen(
         args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs

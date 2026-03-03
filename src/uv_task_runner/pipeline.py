@@ -78,32 +78,24 @@ class Pipeline:
                 logger.info(msg)
                 return False
             if result.exit_code != 0:
-                logger.error(
-                    f"{result.task_path} failed with exit code {result.exit_code}"
-                )
+                logger.error(f"{result.task_path} failed with exit code {result.exit_code}")
                 return self.fail_fast
             logger.info(f"{result.task_path} completed successfully.")
             return False
 
         if self.parallel:
             with cf.ThreadPoolExecutor() as executor:
-                future_to_config = {
-                    executor.submit(_execute, tc): tc for tc in self.tasks
-                }
+                future_to_config = {executor.submit(_execute, tc): tc for tc in self.tasks}
                 for future in cf.as_completed(future_to_config):
                     result = future.result()
                     task_results.append(result)
                     if _should_abort(result):
                         aborted = True
                         aborted_by = result.task_path
-                        logger.warning(
-                            "Fail fast enabled: terminating any tasks still running."
-                        )
+                        logger.warning("Fail fast enabled: terminating any tasks still running.")
                         for tp, handle in task_handles.items():
                             if handle.process.poll() is None:
-                                logger.warning(
-                                    f"Terminating {tp} with PID {handle.process.pid}"
-                                )
+                                logger.warning(f"Terminating {tp} with PID {handle.process.pid}")
                                 task._terminate_tree(handle.process)
                         if sys.version_info >= (3, 9):
                             executor.shutdown(wait=False, cancel_futures=True)  # pragma: no cover
