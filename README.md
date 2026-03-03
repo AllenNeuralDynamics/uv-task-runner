@@ -8,7 +8,7 @@ Each script is invoked as `uv run <script>`, so scripts can declare their own de
 [![Python version](https://img.shields.io/pypi/pyversions/uv-task-runner)](https://pypi.org/project/uv-task-runner/)
 
 [![ty](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ty/main/assets/badge/v0.json)](https://github.com/astral-sh/ty)
-[![Coverage](https://img.shields.io/badge/coverage-63%25-yellow?logo=codecov)](https://app.codecov.io/github/AllenNeuralDynamics/uv-task-runner)
+[![Coverage](https://img.shields.io/badge/coverage-98%25-green?logo=codecov)](https://app.codecov.io/github/AllenNeuralDynamics/uv-task-runner)
 [![CI/CD](https://img.shields.io/github/actions/workflow/status/AllenNeuralDynamics/uv-task-runner/publish.yaml?label=CI/CD&logo=github)](https://github.com/AllenNeuralDynamics/uv-task-runner/actions/workflows/publish.yaml)
 [![GitHub issues](https://img.shields.io/github/issues/AllenNeuralDynamics/uv-task-runner?logo=github)](https://github.com/AllenNeuralDynamics/uv-task-runner/issues)
 
