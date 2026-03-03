@@ -257,7 +257,7 @@ TaskConfig(
 
 `Pipeline` accepts `on_pipeline_start` and `on_pipeline_end` in the same way.
 
-Hooks run synchronously in the parent process. Keep them fast; for slow operations, open a background thread inside the hook.
+Hooks run synchronously in the parent process. Keep them fast; for slow file copying operations, open a background thread inside the hook.
 
 ---
 
