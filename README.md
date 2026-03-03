@@ -17,22 +17,32 @@ Each script is invoked as `uv run <script>`, so scripts can declare their own de
 
 ## Requirements
 
-- Python 3.8+
 - `uv` on PATH. See https://docs.astral.sh/uv/getting-started/installation/
 
 ## Installation
 
-Make available globally:
+> **🛈 Note for Allen Institute Windows users**
+>
+> The default path `uv` uses for downloaded Python versions is blocked from running executables by institute security policies. To work around this, environment variables can be set a different location. 
+>
+> This powershell command installs `uv` and configures it to use a location that is known to work on Allen Windows machines:
+> ```powershell
+> powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+> [System.Environment]::SetEnvironmentVariable('UV_PYTHON_INSTALL_DIR', '%USERPROFILE%\.uv\python', 'User')
+> [System.Environment]::SetEnvironmentVariable('UV_TOOL_BIN_DIR', '%USERPROFILE%\.uv\bin', 'User')
+> ```
+
+Make CLI tool available globally:
 ```bash
 uv install uv-task-runner
 ```
 
-Or run CLI tool in temporary environment:
+Or run in a temporary environment:
 ```bash
-uv run uv-task-runner
+uvx uv-task-runner              # `uvx` is an alias for `uv run tool`
 ```
 
-Or add library to Python project:
+Or add library to Python 3.8+ project:
 ```bash
 uv add uv-task-runner
 ```
