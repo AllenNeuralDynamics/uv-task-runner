@@ -76,10 +76,10 @@ python-version = "3.8"
 exclude = ["examples", "tests"]
 
 [tool.pytest.ini_options]
+testpaths = ["src", "tests"]
 addopts = [
     "--import-mode=importlib",
     "--doctest-modules",
-    "--ignore-glob=*scripts*,*examples*",
     "--cov",
     "--cov-report=xml",
     "--cov-config=pyproject.toml",
