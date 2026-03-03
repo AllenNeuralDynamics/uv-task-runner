@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from typing import Any
 
 from uv_task_runner import (
     Pipeline,
@@ -65,7 +66,7 @@ def make_mock_handle(
 
 def make_pipeline(**overrides) -> Pipeline:
     """Build a Pipeline with test-friendly defaults."""
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         tasks=[TaskConfig(task_path="a.py"), TaskConfig(task_path="b.py")],
         parallel=True,
         fail_fast=True,
@@ -83,7 +84,7 @@ def make_pipeline(**overrides) -> Pipeline:
 class TestTaskConfig:
     def test_requires_task_path(self):
         with pytest.raises(Exception):
-            TaskConfig()  # task_path is required
+            TaskConfig()  # type: ignore[call-arg]  # task_path is required
 
     def test_defaults(self):
         cfg = TaskConfig(task_path="script.py")
@@ -121,8 +122,8 @@ class TestTaskConfig:
         called = []
         cfg = TaskConfig(
             task_path="x.py",
-            on_task_start=lambda path, pid: called.append(("start", path, pid)),
-            on_task_end=lambda path, result: called.append(("end", path)),
+            on_task_start=lambda path, pid: called.append(("start", path, pid)),  # type: ignore[arg-type]
+            on_task_end=lambda path, result: called.append(("end", path)),  # type: ignore[arg-type]
         )
         assert cfg.on_task_start is not None
         assert cfg.on_task_end is not None
@@ -130,7 +131,7 @@ class TestTaskConfig:
     def test_accepts_list_of_hooks(self):
         cfg = TaskConfig(
             task_path="x.py",
-            on_task_start=[lambda path, pid: None, lambda path, pid: None],
+            on_task_start=[lambda path, pid: None, lambda path, pid: None],  # type: ignore[arg-type]
         )
         assert isinstance(cfg.on_task_start, list)
         assert len(cfg.on_task_start) == 2
@@ -510,7 +511,7 @@ class TestRunTask:
         calls = []
         cfg = TaskConfig(
             task_path="tasks/my_task.py",
-            on_task_start=lambda path, pid: calls.append((path, pid)),
+            on_task_start=lambda path, pid: calls.append((path, pid)),  # type: ignore[arg-type]
         )
         task.run_task(cfg)
         # Wait for threads to start
@@ -1233,7 +1234,7 @@ class TestCallbacks:
         starts = []
         cfg = TaskConfig(
             task_path="a.py",
-            on_task_start=lambda path, pid: starts.append((path, pid)),
+            on_task_start=lambda path, pid: starts.append((path, pid)),  # type: ignore[arg-type]
         )
         pipeline = Pipeline(tasks=[cfg], parallel=False)
 
@@ -1250,7 +1251,7 @@ class TestCallbacks:
         ends = []
         cfg = TaskConfig(
             task_path="a.py",
-            on_task_end=lambda path, result: ends.append((path, result)),
+            on_task_end=lambda path, result: ends.append((path, result)),  # type: ignore[arg-type]
         )
         pipeline = Pipeline(tasks=[cfg], parallel=False)
 
@@ -1269,7 +1270,7 @@ class TestCallbacks:
         tasks = [
             TaskConfig(
                 task_path=f"{ch}.py",
-                on_task_end=lambda path, result, ch=ch: ends.append(ch),
+                on_task_end=lambda path, result, ch=ch: ends.append(ch),  # type: ignore[arg-type]
             )
             for ch in "abc"
         ]
@@ -1303,7 +1304,7 @@ class TestCallbacks:
         pipeline = Pipeline(
             tasks=[TaskConfig(task_path="a.py")],
             parallel=False,
-            on_pipeline_end=lambda r: results.append(r),
+            on_pipeline_end=lambda r: results.append(r),  # type: ignore[arg-type]
         )
         with patch(
             "uv_task_runner.task.run_task",
@@ -1336,7 +1337,7 @@ class TestCallbacks:
         calls = []
         cfg = TaskConfig(
             task_path="a.py",
-            on_task_end=[
+            on_task_end=[  # type: ignore[arg-type]
                 lambda path, result: calls.append(f"hook1:{path}"),
                 lambda path, result: calls.append(f"hook2:{path}"),
             ],
@@ -1386,7 +1387,7 @@ class TestRunTasksFunction:
             "uv_task_runner.task.run_task",
             return_value=make_mock_handle("a.py"),
         ):
-            run_tasks(tasks, on_pipeline_end=lambda r: results.append(r))
+            run_tasks(tasks, on_pipeline_end=lambda r: results.append(r))  # type: ignore[arg-type]
 
         assert len(results) == 1
 
