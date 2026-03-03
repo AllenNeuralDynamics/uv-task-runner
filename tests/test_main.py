@@ -1445,3 +1445,163 @@ class TestMainWrapper:
 
         mock_run_task.assert_not_called()
         assert any("Running 0 task(s)" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# write_template_config
+# ---------------------------------------------------------------------------
+
+
+class TestWriteTemplateConfig:
+    def test_creates_file(self, tmp_path):
+        from uv_task_runner.settings import write_template_config
+
+        dest = tmp_path / "config.toml"
+        result = write_template_config(dest)
+        assert result.exists()
+
+    def test_raises_if_exists(self, tmp_path):
+        from uv_task_runner.settings import write_template_config
+
+        dest = tmp_path / "config.toml"
+        dest.touch()
+        with pytest.raises(FileExistsError):
+            write_template_config(dest)
+
+
+# ---------------------------------------------------------------------------
+# Settings – invalid numeric log level
+# ---------------------------------------------------------------------------
+
+
+class TestSettingsNumericLogLevel:
+    def test_invalid_numeric_raises(self):
+        with pytest.raises(Exception):
+            Settings(log_level=999)
+
+
+# ---------------------------------------------------------------------------
+# _build_args validation
+# ---------------------------------------------------------------------------
+
+
+class TestBuildArgs:
+    def test_raises_on_help_flag(self):
+        cfg = TaskConfig(task_path="s.py", uv_run_args=["--help"])
+        with pytest.raises(ValueError):
+            task._build_args(cfg)
+
+    def test_warns_python_without_no_project(self, caplog):
+        cfg = TaskConfig(task_path="s.py", uv_run_args=["--python", "3.11"])
+        with caplog.at_level(logging.WARNING, logger="uv_task_runner.task"):
+            task._build_args(cfg)
+        assert any("--no-project" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# dry_run_task
+# ---------------------------------------------------------------------------
+
+
+class TestDryRunTask:
+    def test_returns_synthetic_result(self, caplog):
+        cfg = TaskConfig(task_path="s.py")
+        with caplog.at_level(logging.INFO, logger="uv_task_runner.task"):
+            result = task.dry_run_task(cfg)
+        assert result.task_path == "s.py"
+        assert result.exit_code == 0
+        assert result.success is True
+        assert result.pid == 0
+        assert result.stdout == ""
+        assert result.stderr == ""
+        assert any("DRY RUN" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Pipeline – dry_run mode
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineDryRun:
+    def test_dry_run_does_not_spawn_processes(self, caplog):
+        pipeline = Pipeline(
+            tasks=[TaskConfig(task_path="a.py"), TaskConfig(task_path="b.py")],
+            dry_run=True,
+        )
+        with patch("uv_task_runner.task.run_task") as mock_run:
+            with caplog.at_level(logging.INFO):
+                result = pipeline.run()
+        mock_run.assert_not_called()
+        assert len(result.task_results) == 2
+        assert all(r.exit_code == 0 for r in result.task_results)
+        assert any("DRY RUN" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Pipeline – log_multiline + wait=False warning
+# ---------------------------------------------------------------------------
+
+
+class TestShouldAbortLogMultiline:
+    def test_log_multiline_no_output_warning(self, caplog):
+        """log_multiline=True + wait=False emits extra note about buffered output."""
+        pipeline = Pipeline(
+            tasks=[TaskConfig(task_path="bg.py", wait=False)],
+            parallel=False,
+            fail_fast=False,
+            log_multiline=True,
+        )
+        with patch(
+            "uv_task_runner.task.run_task",
+            return_value=make_mock_handle("bg.py", returncode=None),
+        ):
+            with caplog.at_level(logging.INFO):
+                pipeline.run()
+        assert any("No output will be logged" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# run_task – non-Windows platform (start_new_session not set)
+# ---------------------------------------------------------------------------
+
+
+class TestRunTaskPlatform:
+    @patch("uv_task_runner.task.subprocess.Popen")
+    def test_no_start_new_session_on_non_windows(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.pid = 1
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.stderr = io.StringIO("")
+        mock_popen.return_value = mock_proc
+
+        with patch("uv_task_runner.task.sys.platform", "linux"):
+            task.run_task(TaskConfig(task_path="s.py"))
+
+        _, kwargs = mock_popen.call_args
+        assert "start_new_session" not in kwargs
+
+
+# ---------------------------------------------------------------------------
+# main() – --init and --config error paths
+# ---------------------------------------------------------------------------
+
+
+class TestMainCLIPaths:
+    def test_main_init_creates_config(self, tmp_path, monkeypatch):
+        dest = tmp_path / "config.toml"
+        monkeypatch.setattr(sys, "argv", ["__main__.py", "--init", str(dest)])
+        main()
+        assert dest.exists()
+
+    def test_main_init_file_exists_exits(self, tmp_path, monkeypatch):
+        dest = tmp_path / "config.toml"
+        dest.touch()
+        monkeypatch.setattr(sys, "argv", ["__main__.py", "--init", str(dest)])
+        with pytest.raises(SystemExit):
+            main()
+
+    def test_main_config_flag_not_found_exits(self, tmp_path, monkeypatch):
+        nonexistent = tmp_path / "nonexistent.toml"
+        monkeypatch.setattr(sys, "argv", ["__main__.py", "--config", str(nonexistent)])
+        with pytest.raises(SystemExit):
+            main()
