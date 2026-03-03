@@ -20,12 +20,12 @@ logger = logging.getLogger(__name__)
 
 @runtime_checkable
 class OnTaskStart(Protocol):
-    def __call__(self, task_path: str, pid: int) -> None: ...
+    def __call__(self, task_path: str, pid: int) -> None: ...  # pragma: no cover
 
 
 @runtime_checkable
 class OnTaskEnd(Protocol):
-    def __call__(self, task_path: str, result: TaskResult) -> None: ...
+    def __call__(self, task_path: str, result: TaskResult) -> None: ...  # pragma: no cover
 
 
 class TaskConfig(BaseModel):

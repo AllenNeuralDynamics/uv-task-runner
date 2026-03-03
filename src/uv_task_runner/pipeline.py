@@ -19,11 +19,11 @@ class PipelineResult:
 
 
 class OnPipelineStart(Protocol):
-    def __call__(self) -> None: ...
+    def __call__(self) -> None: ...  # pragma: no cover
 
 
 class OnPipelineEnd(Protocol):
-    def __call__(self, pipeline_result: PipelineResult) -> None: ...
+    def __call__(self, pipeline_result: PipelineResult) -> None: ...  # pragma: no cover
 
 
 @dataclass
@@ -106,7 +106,7 @@ class Pipeline:
                                 )
                                 task._terminate_tree(handle.process)
                         if sys.version_info >= (3, 9):
-                            executor.shutdown(wait=False, cancel_futures=True)
+                            executor.shutdown(wait=False, cancel_futures=True)  # pragma: no cover
                         else:
                             logger.warning("Python <3.9: pending futures cannot be cancelled.")
                             executor.shutdown(wait=False)
