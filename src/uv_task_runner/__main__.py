@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.8"
 # dependencies = [
-#     "pydantic-settings>=2.13.1",
+#     "pydantic-settings>=2",
 # ]
 # ///
 from __future__ import annotations
