@@ -2,14 +2,23 @@
 
 Run multiple Python scripts in parallel or in sequence, with per-script dependency and Python version isolation via [uv](https://docs.astral.sh/uv/).
 
-Each script is invoked as `uv run <script>`, so scripts can declare their own dependencies and Python version using [PEP 723 inline metadata](https://peps.python.org/pep-0723/). No shared virtual environment is required.
+Each script is invoked as `uv run <script>`, so scripts can declare their own dependencies and Python version using [PEP 723 inline metadata](https://peps.python.org/pep-0723/). No more shared mega-environments.
+
+[![PyPI](https://img.shields.io/pypi/v/uv-task-runner.svg?label=PyPI&color=blue)](https://pypi.org/project/uv-task-runner/)
+[![Python version](https://img.shields.io/pypi/pyversions/uv-task-runner)](https://pypi.org/project/uv-task-runner/)
+
+[![ty](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ty/main/assets/badge/v0.json)](https://github.com/astral-sh/ty)
+[![Coverage](https://img.shields.io/badge/coverage-63%25-yellow?logo=codecov)](https://app.codecov.io/github/AllenNeuralDynamics/uv-task-runner)
+[![CI/CD](https://img.shields.io/github/actions/workflow/status/AllenNeuralDynamics/uv-task-runner/publish.yaml?label=CI/CD&logo=github)](https://github.com/AllenNeuralDynamics/uv-task-runner/actions/workflows/publish.yaml)
+[![GitHub issues](https://img.shields.io/github/issues/AllenNeuralDynamics/uv-task-runner?logo=github)](https://github.com/AllenNeuralDynamics/uv-task-runner/issues)
+
 
 ---
 
 ## Requirements
 
 - Python 3.8+
-- `uv` on `PATH`
+- `uv` on PATH. See https://docs.astral.sh/uv/getting-started/installation/
 
 ## Installation
 
@@ -18,12 +27,12 @@ Make available globally:
 uv install uv-task-runner
 ```
 
-Run from CLI with no installation:
+Or run CLI tool in temporary environment:
 ```bash
-uv run uv-task-runner [--config path/to/config.toml]
+uv run uv-task-runner
 ```
 
-Or install directly in project:
+Or add library to Python project:
 ```bash
 uv add uv-task-runner
 ```
