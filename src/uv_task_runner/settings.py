@@ -1,3 +1,5 @@
+"""Configuration settings loaded from TOML files, CLI arguments, and keyword arguments."""
+
 from __future__ import annotations
 
 import logging

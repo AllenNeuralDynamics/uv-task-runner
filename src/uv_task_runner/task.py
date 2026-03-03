@@ -1,3 +1,5 @@
+"""Task spawning, output capture, and result collection via uv run subprocesses."""
+
 from __future__ import annotations
 
 import logging

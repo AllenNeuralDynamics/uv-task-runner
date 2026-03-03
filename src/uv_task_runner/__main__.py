@@ -4,6 +4,8 @@
 #     "pydantic-settings>=2",
 # ]
 # ///
+"""CLI entry point for uv-task-runner."""
+
 from __future__ import annotations
 
 import logging

@@ -1,3 +1,5 @@
+"""A simple utility to run multiple Python scripts sequentially or in parallel, with isolated environments, monitoring and error handling."""
+
 from uv_task_runner import errors, pipeline, settings, task
 
 ConfigError = errors.ConfigError

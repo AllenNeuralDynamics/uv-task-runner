@@ -1,3 +1,5 @@
+"""Pipeline orchestration: run tasks serially or in parallel with optional fail-fast."""
+
 from __future__ import annotations
 
 import concurrent.futures as cf

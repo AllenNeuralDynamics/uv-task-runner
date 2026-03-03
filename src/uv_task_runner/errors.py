@@ -1,3 +1,6 @@
+"""Custom exception types for uv-task-runner."""
+
+
 class ConfigError(Exception):
     """Raised for invalid configuration: bad TOML, missing fields, invalid settings values."""
 
