@@ -475,14 +475,15 @@ class TestRunTask:
         assert kwargs["text"] is True
 
     @patch("uv_task_runner.task.subprocess.Popen")
-    def test_start_new_session_set(self, mock_popen):
+    def test_start_new_session_set_on_windows(self, mock_popen):
         mock_proc = MagicMock()
         mock_proc.pid = 100
         mock_proc.stdout = io.StringIO("")
         mock_proc.stderr = io.StringIO("")
         mock_popen.return_value = mock_proc
 
-        task.run_task(TaskConfig(task_path="s.py"))
+        with patch("uv_task_runner.task.sys.platform", "win32"):
+            task.run_task(TaskConfig(task_path="s.py"))
 
         _, kwargs = mock_popen.call_args
         assert kwargs.get("start_new_session") is True
