@@ -89,7 +89,7 @@ Given a `uv_task_runner.toml`:
 ```toml
 # Tasks are executed in order below if parallel=false (default):
 [[tasks]]
-task_path = "scripts/script_a.py"
+task_path = "examples/script_a.py"
 task_args = ["--param1", "updated_value"]
 wait = false # don't wait for script_a.py to finish before starting the next task
 
@@ -97,20 +97,20 @@ wait = false # don't wait for script_a.py to finish before starting the next tas
 task_path = "https://gist.githubusercontent.com/TAJD/1d389deba4221343caef5155090674eb/raw/13984206c008fdb35d2d574fa76b682991f00a08/error_handling.py"
 
 [[tasks]]
-task_path = "scripts/script_b.py"
+task_path = "examples/script_b.py"
 # if script does not declare dependencies with PEP 723 metadata it's possible to customize uv run args:
 uv_run_args = ["--python", "3.14", "--verbose", "--script", "--no-project"]
 
 [[tasks]]
-task_path = "scripts/script_c.py"
+task_path = "examples/script_c.py"
 ```
 
 Running `uv run uv-task-runner` produces:
 
 ```
 2026-03-02 13:32:27 | INFO | Running 4 task(s).
-2026-03-02 13:32:27 | INFO | Running command: uv run --quiet --script scripts/script_a.py --param1 updated_value
-2026-03-02 13:32:27 | INFO | scripts/script_a.py is running: not waiting for it to finish.
+2026-03-02 13:32:27 | INFO | Running command: uv run --quiet --script examples/script_a.py --param1 updated_value
+2026-03-02 13:32:27 | INFO | examples/script_a.py is running: not waiting for it to finish.
 2026-03-02 13:32:27 | INFO | Running command: uv run --quiet --script https://gist.githubusercontent.com/TAJD/1d389deba4221343caef5155090674eb/raw/13984206c008fdb35d2d574fa76b682991f00a08/error_handling.py
 2026-03-02 13:32:27 | INFO | [error_handling.py:164824] Error: The divisor 'b' cannot be zero.
 2026-03-02 13:32:27 | INFO | [error_handling.py:164824] Error: The divisor 'b' cannot be zero.
@@ -125,7 +125,7 @@ Running `uv run uv-task-runner` produces:
 2026-03-02 13:32:27 | INFO | [error_handling.py:164824]     stack_trace = ''.join(traceback.format_stack())
 2026-03-02 13:32:27 | INFO | [error_handling.py:164824]
 2026-03-02 13:32:27 | INFO | https://gist.githubusercontent.com/TAJD/1d389deba4221343caef5155090674eb/raw/13984206c008fdb35d2d574fa76b682991f00a08/error_handling.py completed successfully.
-2026-03-02 13:32:27 | INFO | Running command: uv run --python 3.14 --verbose --script --no-project scripts/script_b.py
+2026-03-02 13:32:27 | INFO | Running command: uv run --python 3.14 --verbose --script --no-project examples/script_b.py
 2026-03-02 13:32:27 | INFO | [script_b.py:145032] DEBUG uv 0.10.7 (08ab1a344 2026-02-27)
 2026-03-02 13:32:27 | INFO | [script_b.py:145032] DEBUG Found project root: `C:\Users\ben.hardcastle\github\uv-plugin-architecture`
 2026-03-02 13:32:27 | INFO | [script_b.py:145032] DEBUG No workspace root found, using project root
@@ -153,18 +153,18 @@ Running `uv run uv-task-runner` produces:
 2026-03-02 13:32:38 | INFO | [script_b.py:145032] DEBUG Moving C:\Users\ben.hardcastle\cache\uv\python\.temp\.tmpajp9EC\python to C:\Users\ben.hardcastle\cache\uv\python\cpython-3.14.3-windows-x86_64-none
 2026-03-02 13:32:38 | INFO | [script_b.py:145032] DEBUG Created link C:\Users\ben.hardcastle\cache\uv\python\cpython-3.14-windows-x86_64-none -> C:\Users\ben.hardcastle\cache\uv\python\cpython-3.14.3-windows-x86_64-none
 2026-03-02 13:32:39 | INFO | [script_b.py:145032] DEBUG Using Python 3.14.3 interpreter at: C:\Users\ben.hardcastle\cache\uv\python\cpython-3.14.3-windows-x86_64-none\python.exe
-2026-03-02 13:32:39 | INFO | [script_b.py:145032] DEBUG Running `python scripts/script_b.py`
+2026-03-02 13:32:39 | INFO | [script_b.py:145032] DEBUG Running `python examples/script_b.py`
 2026-03-02 13:32:39 | INFO | [script_b.py:145032] script_b.py loaded on Python 3.14.3
 2026-03-02 13:32:39 | INFO | [script_b.py:145032] Traceback (most recent call last):
 2026-03-02 13:32:39 | INFO | [script_b.py:145032]   File "C:\Users\ben.hardcastle\github\uv-plugin-architecture\scripts\script_b.py", line 5, in <module>
 2026-03-02 13:32:39 | INFO | [script_b.py:145032]     raise ValueError(f"Simulated error in {Path(__file__).name}")
 2026-03-02 13:32:39 | INFO | [script_b.py:145032] ValueError: Simulated error in script_b.py
 2026-03-02 13:32:39 | INFO | [script_b.py:145032] DEBUG Command exited with code: 1
-2026-03-02 13:32:39 | ERROR | scripts/script_b.py failed with exit code 1
-2026-03-02 13:32:39 | INFO | Running command: uv run --quiet --script scripts/script_c.py
+2026-03-02 13:32:39 | ERROR | examples/script_b.py failed with exit code 1
+2026-03-02 13:32:39 | INFO | Running command: uv run --quiet --script examples/script_c.py
 2026-03-02 13:32:44 | INFO | [script_c.py:36208] script_c.py loaded on Python 3.13.1
 2026-03-02 13:32:44 | INFO | [script_c.py:36208] script_c.py finished
-2026-03-02 13:32:44 | INFO | scripts/script_c.py completed successfully.
+2026-03-02 13:32:44 | INFO | examples/script_c.py completed successfully.
 ```
 
 Key things to note:
