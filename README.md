@@ -330,3 +330,5 @@ Airflow, Prefect, or similar tools.
 **No per-task timeouts.** A hung task will block indefinitely. As a workaround, wrap the script invocation with `timeout` (Unix) or a similar mechanism.
 
 **No task naming.** Tasks are identified by `task_path` in results and log output. Long paths or URLs can make logs harder to read.
+
+**Automated testing of scripts is harder.** Standard test runners (`pytest`, `unittest`) share a single virtual environment and cannot replicate per-script isolation. The best solution might be to extract testable logic into a package and keep the script as a thin entry point.
