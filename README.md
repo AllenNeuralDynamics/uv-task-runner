@@ -43,16 +43,17 @@ uv add uv-task-runner
 
 ### CLI
 
-Generate an annotated config file in the current directory:
+Generate an annotated template config file in the current directory:
 
 ```bash
-uv run uv-task-runner --init              # writes uv_task_runner.toml
+uv run uv-task-runner --init                # writes uv_task_runner.toml
 uv run uv-task-runner --init my_tasks.toml  # custom path
 ```
 
 Or write it by hand. Minimal `uv_task_runner.toml`:
 
 ```toml
+# Tasks are executed in order below if parallel=false (default):
 [[tasks]]
 task_path = "scripts/preprocess.py"
 
