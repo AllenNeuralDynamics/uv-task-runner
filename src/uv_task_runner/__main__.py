@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.13"
+# requires-python = ">=3.8"
 # dependencies = [
 #     "pydantic-settings>=2.13.1",
 # ]

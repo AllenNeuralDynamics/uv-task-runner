@@ -8,7 +8,7 @@ Each script is invoked as `uv run <script>`, so scripts can declare their own de
 
 ## Requirements
 
-- Python 3.13+
+- Python 3.8+
 - `uv` on `PATH`
 
 ## Installation
