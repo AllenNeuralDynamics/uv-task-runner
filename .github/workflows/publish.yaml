@@ -12,7 +12,7 @@ on:
       - '!**.json'
       - '!.vscode'
       - '!scripts/**'
-      - '!tests/**'
+      - '!examples/**'
       - '!notebooks/**'
       - '!**.md'
       - '!**.yml'
@@ -24,7 +24,7 @@ on:
       - '**.json'
       - '.vscode'
       - 'scripts/**'
-      - 'tests/**'
+      - 'examples/**'
       - 'notebooks/**'
       - '**.md'
       - '**.yml'
@@ -81,7 +81,7 @@ jobs:
 
     - uses: astral-sh/setup-uv@v5.4.1
       with:
-        python-version: '3.8'
+        python-version: '3.11'
 
     - name: Publish with bump & tag
       # actions/checkout 
