@@ -1,7 +1,7 @@
 [project]
 name = "uv-task-runner"
 version = "0.1.0"
-description = "Add your description here"
+description = "A simple utility to run multiple Python scripts sequentially or in parallel, with isolated environments, monitoring and error handling."
 readme = "README.md"
 authors = [
     { name = "bjhardcastle", email = "ben.hardcastle@alleninstitute.org" },
@@ -11,13 +11,105 @@ dependencies = [
     "pydantic-settings>=2",
     "eval_type_backport; python_version < '3.10'",
 ]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+]
+
+[project.urls]
+Repository = "https://github.com/AllenNeuralDynamics/uv-task-runner"
+Issues = "https://github.com/AllenNeuralDynamics/uv-task-runner/issues"
+
+[project.license]
+text = "MIT"
 
 [project.scripts]
 uv-task-runner = "uv_task_runner.__main__:main"
+task = "poethepoet:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+task_runner = ["poethepoet"]
+testing = ["pytest>=8.0", "pytest-cov", "ruff", "ty>=0.0.19"]
+bump = ["bump-my-version", "git-changelog"]
+
+[tool.uv]
+package = true
+default-groups = "all"
 
 [build-system]
 requires = ["uv_build>=0.8.12,<0.9.0"]
 build-backend = "uv_build"
+
+[tool.poe.tasks]
+ty = "ty check"
+pytest = "pytest --cov-report term-missing:skip-covered --cov-report=html"
+test = ["ty", "pytest"]
+lint = "ruff check src --fix-only"
+format = "ruff format src"
+bump_pub_tag = "bump-my-version bump patch"
+release = ["lint", "format", "bump_pub_tag"]
+
+[tool.bumpversion]
+tag = true
+allow_dirty = true
+commit = true
+commit_args = "-a"
+message = "Bump version: {current_version} → {new_version} [skip actions]"
+pre_commit_hooks = [
+    "uv lock --upgrade-package uv-task-runner",
+    "git-changelog -o CHANGELOG.md",
+    "uv build",
+    "uv publish",
+]
+post_commit_hooks = ["git push origin main", "git push --tags"]
+
+[tool.ty.environment]
+python-version = "3.8"
+
+[tool.ty.src]
+exclude = ["examples", "tests"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
+    "--doctest-modules",
+    "--ignore-glob=*scripts*,*examples*",
+    "--cov",
+    "--cov-report=xml",
+    "--cov-config=pyproject.toml",
+]
+
+[tool.coverage.report]
+skip_covered = true
+show_missing = true
+skip_empty = true
+exclude_also = [
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "@(abc.)?abstractmethod",
+    "@typing.runtime_checkable",
+]
+[tool.coverage.run]
+branch = true
+source = ["src"]
+[tool.coverage.paths]
+source = ["src"]
+
+
+[tool.ruff]
+fix = true
+line-length = 100
+ignore-init-module-imports = true
+select = ["ANN", "B", "C", "E", "F", "I", "RUF100", "N", "UP", "W", "YTT"]
+extend-exclude = ["tests"]
+src = ["src", "tests"]
+
+[tool.ruff.flake8-tidy-imports]
+ban-relative-imports = "all"
