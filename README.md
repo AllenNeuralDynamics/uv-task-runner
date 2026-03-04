@@ -119,7 +119,7 @@ task_path = "https://gist.githubusercontent.com/TAJD/1d389deba4221343caef5155090
 [[tasks]]
 task_path = "examples/script_b.py"
 # if script does not declare dependencies with PEP 723 metadata it's possible to customize uv run args:
-uv_run_args = ["--python", "3.14", "--verbose", "--script", "--no-project"]
+uv_args = ["--python", "3.14", "--verbose", "--script", "--no-project"]
 
 [[tasks]]
 task_path = "examples/script_c.py"
@@ -129,9 +129,9 @@ Running `uv run uv-task-runner` produces:
 
 ```
 2026-03-02 13:32:27 | INFO | Running 4 task(s).
-2026-03-02 13:32:27 | INFO | Running command: uv run --quiet --script examples/script_a.py --param1 updated_value
+2026-03-02 13:32:27 | INFO | Running command: uv run --quiet --script --no-project examples/script_a.py --param1 updated_value
 2026-03-02 13:32:27 | INFO | examples/script_a.py is running: not waiting for it to finish.
-2026-03-02 13:32:27 | INFO | Running command: uv run --quiet --script https://gist.githubusercontent.com/TAJD/1d389deba4221343caef5155090674eb/raw/13984206c008fdb35d2d574fa76b682991f00a08/error_handling.py
+2026-03-02 13:32:27 | INFO | Running command: uv run --quiet --script --no-project https://gist.githubusercontent.com/TAJD/1d389deba4221343caef5155090674eb/raw/13984206c008fdb35d2d574fa76b682991f00a08/error_handling.py
 2026-03-02 13:32:27 | INFO | [error_handling.py:164824] Error: The divisor 'b' cannot be zero.
 2026-03-02 13:32:27 | INFO | [error_handling.py:164824] Error: The divisor 'b' cannot be zero.
 2026-03-02 13:32:27 | INFO | [error_handling.py:164824] Stack trace:
@@ -181,7 +181,7 @@ Running `uv run uv-task-runner` produces:
 2026-03-02 13:32:39 | INFO | [script_b.py:145032] ValueError: Simulated error in script_b.py
 2026-03-02 13:32:39 | INFO | [script_b.py:145032] DEBUG Command exited with code: 1
 2026-03-02 13:32:39 | ERROR | examples/script_b.py failed with exit code 1
-2026-03-02 13:32:39 | INFO | Running command: uv run --quiet --script examples/script_c.py
+2026-03-02 13:32:39 | INFO | Running command: uv run --quiet --script --no-project examples/script_c.py
 2026-03-02 13:32:44 | INFO | [script_c.py:36208] script_c.py loaded on Python 3.13.1
 2026-03-02 13:32:44 | INFO | [script_c.py:36208] script_c.py finished
 2026-03-02 13:32:44 | INFO | examples/script_c.py completed successfully.
@@ -244,7 +244,8 @@ print(result.aborted, result.aborted_by)
 |-----|------|---------|-------------|
 | `task_path` | string | required | Path to the script, relative to the config file. Can also be a URL (e.g. a GitHub raw file). |
 | `task_args` | list[string] | `[]` | Arguments passed to the script (`sys.argv`). |
-| `uv_run_args` | list[string] | `["--quiet", "--script"]` | Arguments passed to `uv run` before the script path. |
+| `uv_command` | list[string] | `["uv", "run"]` | The uv command prefix. Override to `["uvx"]` to run a package CLI tool instead of a Python script (also set `uv_args = []` to clear script-specific defaults). |
+| `uv_args` | list[string] | `["--quiet", "--script", "--no-project"]` | Arguments inserted between the uv command and the script path. |
 | `wait` | bool | `true` | Wait for the task to finish before proceeding. `false` spawns the process and continues immediately. |
 
 ### Callback hooks (Python API only)
@@ -276,7 +277,7 @@ Hooks run synchronously in the parent process. Keep them fast; for slow file cop
 Each task is executed as:
 
 ```
-uv run [uv_run_args] [task_path] [task_args]
+[uv_command] [uv_args] [task_path] [task_args]
 ```
 
 Scripts can declare their own Python version and dependencies using PEP 723 metadata:

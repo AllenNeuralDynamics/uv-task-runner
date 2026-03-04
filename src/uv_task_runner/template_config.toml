@@ -41,9 +41,13 @@ log_multiline = false
 # # Arguments forwarded to the script itself (default: [])
 # task_args = ["--param", "value"]
 #
-# # Arguments forwarded to `uv run` (default: ["--quiet", "--script"])
+# # Override the uv command prefix (default: ["uv", "run"])
+# # Use ["uvx"] to run a package CLI instead of a script; also set uv_args = [].
+# uv_command = ["uv", "run"]
+#
+# # Arguments forwarded to the uv command (default: ["--quiet", "--script", "--no-project"])
 # # Note: --python without --no-project will warn; --help/-h are disallowed.
-# uv_run_args = ["--quiet", "--script"]
+# uv_args = ["--quiet", "--script", "--no-project"]
 #
 # # Wait for this task to finish before continuing (default: true)
 # # Set false to fire-and-forget; the process outlives the main runner.

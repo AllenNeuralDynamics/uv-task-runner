@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 from typing import Any
 
 from uv_task_runner import (
@@ -90,7 +91,7 @@ class TestTaskConfig:
         cfg = TaskConfig(task_path="script.py")
         assert cfg.wait is True
         assert cfg.task_args == []
-        assert cfg.uv_run_args == ["--quiet", "--script"]
+        assert cfg.uv_args == ["--quiet", "--script", "--no-project"]
         assert cfg.on_task_start is None
         assert cfg.on_task_end is None
 
@@ -99,11 +100,11 @@ class TestTaskConfig:
             task_path="script.py",
             wait=False,
             task_args=["--foo", "bar"],
-            uv_run_args=["--verbose"],
+            uv_args=["--verbose"],
         )
         assert cfg.wait is False
         assert cfg.task_args == ["--foo", "bar"]
-        assert cfg.uv_run_args == ["--verbose"]
+        assert cfg.uv_args == ["--verbose"]
 
     def test_default_factory_independence(self):
         """Each instance should get its own list, not a shared reference."""
@@ -112,11 +113,11 @@ class TestTaskConfig:
         a.task_args.append("x")
         assert "x" not in b.task_args
 
-    def test_uv_run_args_default_factory_independence(self):
+    def test_uv_args_default_factory_independence(self):
         a = TaskConfig(task_path="a.py")
         b = TaskConfig(task_path="b.py")
-        a.uv_run_args.append("--extra")
-        assert "--extra" not in b.uv_run_args
+        a.uv_args.append("--extra")
+        assert "--extra" not in b.uv_args
 
     def test_accepts_callable_hooks(self):
         called = []
@@ -413,7 +414,7 @@ class TestRunTask:
         mock_popen.return_value = mock_proc
 
         cfg = TaskConfig(
-            task_path="tasks/test.py", task_args=["--a", "1"], uv_run_args=["--quiet"]
+            task_path="tasks/test.py", task_args=["--a", "1"], uv_args=["--quiet"]
         )
         task.run_task(cfg)
 
@@ -421,7 +422,7 @@ class TestRunTask:
         assert args == ["uv", "run", "--quiet", "tasks/test.py", "--a", "1"]
 
     @patch("uv_task_runner.task.subprocess.Popen")
-    def test_default_uv_run_args(self, mock_popen):
+    def test_default_uv_args(self, mock_popen):
         mock_proc = MagicMock()
         mock_proc.pid = 100
         mock_proc.stdout = io.StringIO("")
@@ -431,7 +432,7 @@ class TestRunTask:
         task.run_task(TaskConfig(task_path="script.py"))
 
         args = mock_popen.call_args[0][0]
-        assert args == ["uv", "run", "--quiet", "--script", "script.py"]
+        assert args == ["uv", "run", "--quiet", "--script", "--no-project", "script.py"]
 
     @patch("uv_task_runner.task.subprocess.Popen")
     def test_returns_task_handle(self, mock_popen):
@@ -957,7 +958,7 @@ class TestPipelineSequential:
                 TaskConfig(
                     task_path="x.py",
                     task_args=["--foo", "bar"],
-                    uv_run_args=["--verbose"],
+                    uv_args=["--verbose"],
                 )
             ],
             parallel=False,
@@ -973,7 +974,7 @@ class TestPipelineSequential:
 
         assert len(captured_configs) == 1
         assert captured_configs[0].task_args == ["--foo", "bar"]
-        assert captured_configs[0].uv_run_args == ["--verbose"]
+        assert captured_configs[0].uv_args == ["--verbose"]
 
 
 # ---------------------------------------------------------------------------
@@ -1482,20 +1483,22 @@ class TestSettingsNumericLogLevel:
 
 
 # ---------------------------------------------------------------------------
-# _build_args validation
+# TaskConfig arg validation (at construction time)
 # ---------------------------------------------------------------------------
 
 
-class TestBuildArgs:
+class TestTaskConfigArgValidation:
     def test_raises_on_help_flag(self):
-        cfg = TaskConfig(task_path="s.py", uv_run_args=["--help"])
-        with pytest.raises(ValueError):
-            task._build_args(cfg)
+        with pytest.raises(ValidationError):
+            TaskConfig(task_path="s.py", uv_args=["--help"])
+
+    def test_raises_on_h_flag(self):
+        with pytest.raises(ValidationError):
+            TaskConfig(task_path="s.py", uv_args=["-h"])
 
     def test_warns_python_without_no_project(self, caplog):
-        cfg = TaskConfig(task_path="s.py", uv_run_args=["--python", "3.11"])
         with caplog.at_level(logging.WARNING, logger="uv_task_runner.task"):
-            task._build_args(cfg)
+            TaskConfig(task_path="s.py", uv_args=["--python", "3.11"])
         assert any("--no-project" in r.message for r in caplog.records)
 
 

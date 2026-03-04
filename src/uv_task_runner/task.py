@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Callable, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from uv_task_runner import utils
 
@@ -35,12 +35,36 @@ class TaskConfig(BaseModel):
 
     task_path: str
     task_args: list[str] = Field(default_factory=list)
-    uv_run_args: list[str] = Field(default_factory=lambda: ["--quiet", "--script"])
+    uv_command: list[str] = Field(default_factory=lambda: ["uv", "run"])
+    uv_args: list[str] = Field(default_factory=lambda: ["--quiet", "--script", "--no-project"])
     wait: bool = True
     # Hooks below are Python-only (not settable via TOML/CLI), and run in parent environment.
     # Called synchronously; keep them fast. For slow operations open a background thread inside the hook itself.
     on_task_start: OnTaskStart | list[OnTaskStart] | None = None
     on_task_end: OnTaskEnd | list[OnTaskEnd] | None = None
+
+    @model_validator(mode="after")
+    def _validate_args(self) -> TaskConfig:
+        if any(c in self.uv_args for c in ("--help", "-h")):
+            raise ValueError("uv_args should not contain --help or -h")
+        if self.uv_command == ["uv", "run"]:
+            if any(c in self.uv_args for c in ("--python", "-p")):
+                if "--no-project" not in self.uv_args:
+                    logger.warning(
+                        "Detected --python without --no-project in uv_args for task"
+                        " %s. This may cause unexpected behavior if the task's Python"
+                        " version conflicts with the parent process's '.python-version' file.",
+                        self.task_path,
+                    )
+        elif self.uv_command[0] == "uvx" or self.uv_command[:2] == ["uv", "tool"]:
+            if "--script" in self.uv_args:
+                logger.warning(
+                    "uv_args cannot contain --script when uv_command is 'uvx' or 'uv tool'."
+                    " Removing --script from uv_args for task %s.",
+                    self.task_path,
+                )
+                self.uv_args.remove("--script")
+        return self
 
 
 @dataclass(frozen=True)
@@ -102,15 +126,12 @@ def _terminate_tree(proc: subprocess.Popen) -> None:
 
 
 def _build_args(task_config: TaskConfig) -> list[str]:
-    if any(c in task_config.uv_run_args for c in ("--help", "-h")):
-        raise ValueError("uv_run_args cannot contain --help or -h")
-    if any(c in task_config.uv_run_args for c in ("--python", "-p")):
-        if "--no-project" not in task_config.uv_run_args:
-            logger.warning(
-                f"Detected --python without --no-project in uv_run_args for task {task_config.task_path}. "
-                "This may cause unexpected behavior if the task's Python version conflicts with the parent process's '.python-version' file. "
-            )
-    return ["uv", "run"] + task_config.uv_run_args + [task_config.task_path] + task_config.task_args
+    return (
+        task_config.uv_command
+        + task_config.uv_args
+        + [task_config.task_path]
+        + task_config.task_args
+    )
 
 
 def dry_run_task(task_config: TaskConfig) -> TaskResult:
@@ -142,8 +163,8 @@ def run_task(
     if sys.platform.startswith("win"):
         kwargs.setdefault("start_new_session", True)
     logger.debug(
-        "uv_run_args=%r task_args=%r popen_kwargs=%r",
-        task_config.uv_run_args,
+        "uv_args=%r task_args=%r popen_kwargs=%r",
+        task_config.uv_args,
         task_config.task_args,
         kwargs,
     )
