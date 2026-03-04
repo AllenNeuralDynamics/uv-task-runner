@@ -280,7 +280,7 @@ Each task is executed as:
 [uv_command] [uv_args] [task_path] [task_args]
 ```
 
-Scripts can declare their own Python version and dependencies using PEP 723 metadata:
+Scripts can declare their own Python version and dependencies using PEP 723 metadata (see the uv docs on scripts [here](https://docs.astral.sh/uv/guides/scripts/)):
 
 ```python
 # /// script
