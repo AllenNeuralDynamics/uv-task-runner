@@ -1,6 +1,6 @@
 [project]
 name = "uv-task-runner"
-version = "0.1.2"
+version = "0.1.3"
 description = "A simple utility to run multiple Python scripts sequentially or in parallel, with isolated environments, monitoring and error handling."
 readme = "README.md"
 authors = [
