@@ -2,7 +2,7 @@
 
 Run multiple Python scripts in parallel or in sequence, with per-script dependency and Python version isolation via [uv](https://docs.astral.sh/uv/).
 
-Each script is invoked as `uv run <script>`, so scripts can declare their own dependencies and Python version using [PEP 723 inline metadata](https://peps.python.org/pep-0723/). No more shared mega-environments.
+Each script is invoked as [`uv run`](https://docs.astral.sh/uv/reference/cli/#uv-run) `<script>`, so scripts can declare their own dependencies and Python version using [PEP 723 inline metadata](https://peps.python.org/pep-0723/). No more shared mega-environments.
 
 [![PyPI](https://img.shields.io/pypi/v/uv-task-runner.svg?label=PyPI&color=blue)](https://pypi.org/project/uv-task-runner/)
 [![Python version](https://img.shields.io/pypi/pyversions/uv-task-runner)](https://pypi.org/project/uv-task-runner/)
